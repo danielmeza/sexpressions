@@ -18,7 +18,7 @@
   <!-- NuGet package metadata, applied to the projects that set IsPackable=true.
        Per-package PackageId/Description/PackageTags live in each packable project. -->
   <PropertyGroup>
-    <Version>0.1.0</Version>
+    <Version>0.1.1</Version>
     <Authors>Daniel Meza</Authors>
     <!-- Packages are published to the Gasoleo Technology organization on nuget.org. -->
     <Company>Gasoleo Technology</Company>
