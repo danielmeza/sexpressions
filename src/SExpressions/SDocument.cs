@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -19,6 +20,9 @@ namespace SExpressions
     /// </remarks>
     public sealed class SDocument : IReadOnlyList<SExpression>
     {
+        /// <summary>UTF-8 with a byte order mark, for a document that must keep or gain one on save.</summary>
+        internal static readonly Encoding Utf8WithBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: true);
+
         private readonly SExpression _container;
 
         /// <summary>Creates an empty document.</summary>
@@ -57,6 +61,15 @@ namespace SExpressions
         /// <summary>Gets the text this document was parsed from, or <see langword="null"/>.</summary>
         public string? SourceText => _container.Source;
 
+        /// <summary>
+        /// True when this document's file began with a UTF-8 byte order mark, or when one has been
+        /// requested since. <see cref="Save"/> and <see cref="SaveAsync"/> re-emit it when this is
+        /// true. Defaults to <see langword="false"/> for a document parsed from a string or built in
+        /// memory; <see cref="Load"/> and <see cref="LoadAsync"/> set it from the file's actual bytes,
+        /// never from a guess. A caller may also set it directly to opt in or out deliberately.
+        /// </summary>
+        public bool HasByteOrderMark { get; set; }
+
         /// <summary>Parses every top-level form in <paramref name="text"/>.</summary>
         /// <param name="text">S-expression text.</param>
         /// <returns>The document.</returns>
@@ -65,14 +78,50 @@ namespace SExpressions
         /// <summary>Parses every top-level form in a file.</summary>
         /// <param name="path">Path to the file.</param>
         /// <returns>The document.</returns>
-        public static SDocument Load(string path) => new SExpressionParser().ParseAllFile(path);
+        public static SDocument Load(string path)
+        {
+            var document = new SExpressionParser().ParseAllFile(path);
+            document.HasByteOrderMark = FileStartsWithUtf8Bom(path);
+            return document;
+        }
 
         /// <summary>Parses every top-level form in a file, reading it asynchronously.</summary>
         /// <param name="path">Path to the file.</param>
         /// <param name="cancellationToken">Cancels the read.</param>
         /// <returns>The document.</returns>
-        public static Task<SDocument> LoadAsync(string path, CancellationToken cancellationToken = default) =>
-            new SExpressionParser().ParseAllFileAsync(path, cancellationToken);
+        public static async Task<SDocument> LoadAsync(string path, CancellationToken cancellationToken = default)
+        {
+            var document = await new SExpressionParser().ParseAllFileAsync(path, cancellationToken).ConfigureAwait(false);
+            document.HasByteOrderMark = await FileStartsWithUtf8BomAsync(path, cancellationToken).ConfigureAwait(false);
+            return document;
+        }
+
+        /// <summary>
+        /// Reads the first three bytes of a file to see whether it begins with a UTF-8 BOM
+        /// (<c>EF BB BF</c>). <see cref="File.ReadAllText(string)"/> silently strips the BOM while
+        /// decoding, so this is the only way left to know it was there.
+        /// </summary>
+        private static bool FileStartsWithUtf8Bom(string path)
+        {
+            Span<byte> buffer = stackalloc byte[3];
+            using var stream = File.OpenRead(path);
+            var read = stream.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false);
+            return IsUtf8Bom(buffer[..read]);
+        }
+
+        private static async Task<bool> FileStartsWithUtf8BomAsync(string path, CancellationToken cancellationToken)
+        {
+            var buffer = new byte[3];
+            var stream = File.OpenRead(path);
+            await using (stream.ConfigureAwait(false))
+            {
+                var read = await stream.ReadAtLeastAsync(buffer, buffer.Length, throwOnEndOfStream: false, cancellationToken).ConfigureAwait(false);
+                return IsUtf8Bom(buffer.AsSpan(0, read));
+            }
+        }
+
+        private static bool IsUtf8Bom(ReadOnlySpan<byte> bytes) =>
+            bytes.Length == 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
 
         /// <summary>Appends a top-level form.</summary>
         /// <param name="form">The form to append.</param>
@@ -101,16 +150,28 @@ namespace SExpressions
         /// <returns>The file text.</returns>
         public string ToText(SExpressionWriterOptions options) => new SExpressionWriter(options).Write(this);
 
-        /// <summary>Writes the document to a file.</summary>
+        /// <summary>Writes the document to a file. Re-emits a leading UTF-8 BOM when <see cref="HasByteOrderMark"/> is set.</summary>
         /// <param name="path">Destination path.</param>
-        public void Save(string path) => File.WriteAllText(path, ToText());
+        public void Save(string path)
+        {
+            if (HasByteOrderMark)
+            {
+                File.WriteAllText(path, ToText(), Utf8WithBom);
+            }
+            else
+            {
+                File.WriteAllText(path, ToText());
+            }
+        }
 
-        /// <summary>Writes the document to a file asynchronously.</summary>
+        /// <summary>Writes the document to a file asynchronously. Re-emits a leading UTF-8 BOM when <see cref="HasByteOrderMark"/> is set.</summary>
         /// <param name="path">Destination path.</param>
         /// <param name="cancellationToken">Cancels the write.</param>
         /// <returns>A task that completes when the file is written.</returns>
         public Task SaveAsync(string path, CancellationToken cancellationToken = default) =>
-            File.WriteAllTextAsync(path, ToText(), cancellationToken);
+            HasByteOrderMark
+                ? File.WriteAllTextAsync(path, ToText(), Utf8WithBom, cancellationToken)
+                : File.WriteAllTextAsync(path, ToText(), cancellationToken);
 
         /// <inheritdoc />
         public IEnumerator<SExpression> GetEnumerator() => _container.Children.GetEnumerator();

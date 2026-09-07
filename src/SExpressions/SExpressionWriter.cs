@@ -135,18 +135,36 @@ namespace SExpressions
             File.WriteAllText(filePath, content);
         }
 
-        /// <summary>Write a document to a file.</summary>
+        /// <summary>Write a document to a file. Re-emits a leading UTF-8 BOM when <see cref="SDocument.HasByteOrderMark"/> is set.</summary>
         /// <param name="document">The document to write.</param>
         /// <param name="filePath">The path of the file to write to.</param>
-        public void WriteToFile(SDocument document, string filePath) => File.WriteAllText(filePath, Write(document));
+        public void WriteToFile(SDocument document, string filePath)
+        {
+            ArgumentNullException.ThrowIfNull(document);
+            var content = Write(document);
+            if (document.HasByteOrderMark)
+            {
+                File.WriteAllText(filePath, content, SDocument.Utf8WithBom);
+            }
+            else
+            {
+                File.WriteAllText(filePath, content);
+            }
+        }
 
-        /// <summary>Write a document to a file asynchronously.</summary>
+        /// <summary>Write a document to a file asynchronously. Re-emits a leading UTF-8 BOM when <see cref="SDocument.HasByteOrderMark"/> is set.</summary>
         /// <param name="document">The document to write.</param>
         /// <param name="filePath">The path of the file to write to.</param>
         /// <param name="cancellationToken">Cancels the write.</param>
         /// <returns>A task that completes when the file is written.</returns>
-        public Task WriteToFileAsync(SDocument document, string filePath, CancellationToken cancellationToken = default) =>
-            File.WriteAllTextAsync(filePath, Write(document), cancellationToken);
+        public Task WriteToFileAsync(SDocument document, string filePath, CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(document);
+            var content = Write(document);
+            return document.HasByteOrderMark
+                ? File.WriteAllTextAsync(filePath, content, SDocument.Utf8WithBom, cancellationToken)
+                : File.WriteAllTextAsync(filePath, content, cancellationToken);
+        }
 
         /// <summary>Writes an expression to a <see cref="TextWriter"/>.</summary>
         /// <param name="expression">The expression to write.</param>
@@ -263,23 +281,39 @@ namespace SExpressions
                 }
             }
 
+            // Once a comment has been emitted, it runs to the end of its line -- the next item can
+            // never follow it with just a space, or it would be swallowed into the comment text on
+            // re-parse. It has to start fresh on its own line instead.
+            var previousWasComment = false;
             foreach (var item in e.ItemsArray)
             {
                 if (item.Kind == SItemKind.Atom)
                 {
-                    sb.Append(' ');
+                    if (previousWasComment)
+                    {
+                        AppendNewLine(sb);
+                        AppendIndent(sb, level + 1);
+                    }
+                    else
+                    {
+                        sb.Append(' ');
+                    }
+
                     AppendLeaf(item, sb);
+                    previousWasComment = false;
                 }
                 else if (item.Kind == SItemKind.Comment)
                 {
                     AppendNewLine(sb);
                     AppendIndent(sb, level + 1);
                     AppendLeaf(item, sb);
+                    previousWasComment = true;
                 }
                 else
                 {
                     AppendNewLine(sb);
                     AppendNode(item.Expression!, sb, level + 1, leadingIndent: true);
+                    previousWasComment = false;
                 }
             }
 
