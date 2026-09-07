@@ -6,7 +6,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace SExpressionSharp
+namespace SExpressions
 {
     /// <summary>
     /// Knobs for <see cref="SExpressionParser"/>.

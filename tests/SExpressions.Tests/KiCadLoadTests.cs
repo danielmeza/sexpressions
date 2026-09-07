@@ -1,6 +1,6 @@
 using System.Text.Json.Nodes;
 
-namespace SExpressionSharp.Tests;
+namespace SExpressions.Tests;
 
 /// <summary>
 /// The other half of acceptance 1: a board, a symbol library and a design-rule file that KiCad

@@ -1,6 +1,6 @@
 using System.Globalization;
 
-namespace SExpressionSharp.Tests;
+namespace SExpressions.Tests;
 
 /// <summary>
 /// The behaviour the library promises, on inputs small enough to read.

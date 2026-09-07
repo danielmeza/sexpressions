@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>SExpressions</RootNamespace>
+    <AssemblyName>SExpressions</AssemblyName>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <!-- Packaging metadata. In kicad-ultra this block lived in Directory.Build.targets so that the
+       packaging change and the parser rewrite touched disjoint files; both have landed, so it moves
+       here, which is where a package's own identity belongs. -->
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>SExpressions</PackageId>
+    <Description>A small, dependency-free S-expression parser and writer for .NET. Reads and writes the
+Lisp-style parenthesised syntax used by KiCad files, Guile/Scheme configuration and similar formats,
+into a plain object tree you can walk, query and serialise back out. Round trips byte-identically:
+quoting, comments, source order and whitespace all survive a parse/write cycle.</Description>
+    <PackageTags>s-expression;sexpr;sexp;parser;writer;lisp;serialization;round-trip</PackageTags>
+    <PackageIcon>icon.png</PackageIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../../assets/icons/sexpressions-icon.png"
+          Pack="true" PackagePath="icon.png" Visible="false" />
+  </ItemGroup>
+
+</Project>

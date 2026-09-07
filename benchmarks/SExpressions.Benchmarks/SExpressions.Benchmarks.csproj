@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>SExpressions.Benchmarks</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <!-- `dotnet test` on the solution walks every project; this one is an executable, not a test
+         project, and saying so keeps it out of the test run instead of failing for want of an adapter. -->
+    <IsTestProject>false</IsTestProject>
+    <!-- BenchmarkDotNet requires an optimised build to produce meaningful numbers and refuses to run
+         otherwise. Never measure a Debug build. -->
+    <Optimize Condition="'$(Configuration)' == 'Release'">true</Optimize>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" Version="0.14.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/SExpressions/SExpressions.csproj" />
+  </ItemGroup>
+
+</Project>

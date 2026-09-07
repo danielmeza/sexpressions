@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 
-namespace SExpressionSharp
+namespace SExpressions
 {
     /// <summary>
     /// A node in an S-expression tree: a token followed by an ordered sequence of atoms, nested

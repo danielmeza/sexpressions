@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace SExpressionSharp.Tests;
+namespace SExpressions.Tests;
 
 /// <summary>
 /// Locates the real KiCad 10 corpus and the kicad-cli shim. Every corpus-backed test skips
@@ -118,12 +118,28 @@ public static class Corpus
         }
     }
 
+    /// <summary>
+    /// The two fixed files the acceptance suite round-trips, which are named rather than discovered.
+    /// Like every other enumerator here they must yield nothing when the corpus is absent: a theory
+    /// that yields a case the test body cannot then read turns "skipped" into "failed".
+    /// </summary>
+    private static IEnumerable<string> FixedFiles()
+    {
+        if (Root is null)
+        {
+            yield break;
+        }
+
+        yield return Path.Combine("libs", "orbion.kicad_sym");
+        yield return Path.Combine("config", "worksheets", "orbion-a3.kicad_wks");
+    }
+
     /// <summary>Everything the acceptance suite round-trips: schematics, boards, the symbol library, the worksheet and the design rules.</summary>
     public static IEnumerable<string> All() =>
         Schematics()
             .Concat(Boards())
             .Concat(DesignRules())
-            .Concat(new[] { Path.Combine("libs", "orbion.kicad_sym"), Path.Combine("config", "worksheets", "orbion-a3.kicad_wks") });
+            .Concat(FixedFiles());
 
     public static string Read(string relative) => File.ReadAllText(Path.Combine(RequireRoot(), relative));
 

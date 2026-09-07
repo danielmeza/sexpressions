@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore SExpressions.slnx
+
+      - name: Build
+        run: dotnet build SExpressions.slnx -c Release --no-restore
+
+      # The corpus-backed tests (round trip against the real KiCad files) skip themselves when
+      # ORBION_KICAD_ROOT is absent, so CI runs the parser/writer unit tests only. The corpus run is
+      # a local gate; its result is quoted in the PR that changes the parser.
+      - name: Test
+        run: dotnet test SExpressions.slnx -c Release --no-build
+
+      - name: Pack
+        run: dotnet pack SExpressions.slnx -c Release --no-build -o artifacts/packages
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nupkg
+          path: |
+            artifacts/packages/*.nupkg
+            artifacts/packages/*.snupkg
+          if-no-files-found: warn
