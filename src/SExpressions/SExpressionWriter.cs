@@ -110,7 +110,12 @@ namespace SExpressions
             }
 
             var sb = new StringBuilder(Capacity(container));
-            if (!(CanSplice(container) && TrySplice(container, sb, 0)))
+
+            // -1, not 0: the container is a synthetic node holding the top-level forms, not a form
+            // itself, so it occupies no indent level and its children are the level-0 forms. Splicing
+            // it at 0 put everything the writer had to re-format one indent deeper than the text
+            // around it -- invisible until a caller adds a node, and then wrong on every line of it.
+            if (!(CanSplice(container) && TrySplice(container, sb, -1)))
             {
                 sb.Length = 0;
                 AppendDocumentCanonical(container, sb);
