@@ -220,4 +220,46 @@ public class RegressionTests
         Assert.False(root.TryGetValue<bool>(0, out var value));
         Assert.False(value);
     }
+
+    // ---------------------------------------------------- a document is not an extra indent level
+
+    [Fact]
+    public void AddingANode_IndentsItTheSameThroughADocumentAsThroughAnExpression()
+    {
+        const string Text = "(root\n\t(a\n\t\t(b 1)\n\t)\n)\n";
+
+        var document = SDocument.Parse(Text);
+        document.Root!.GetChild("a")!.CreateChild("c").AddValue("2");
+
+        var expression = SExpression.Parse(Text);
+        expression.GetChild("a")!.CreateChild("c").AddValue("2");
+
+        // The container holding the top-level forms is not itself a form, so it must not push its
+        // children in by one. It used to, which put every re-formatted line one tab too deep.
+        Assert.Equal("(root\n\t(a\n\t\t(b 1)\n\t\t(c 2)\n\t)\n)\n", document.ToText());
+        // The document keeps the file's trailing newline; a bare expression has none to keep.
+        Assert.Equal(expression.ToText(), document.ToText().TrimEnd('\n'));
+    }
+
+    [Fact]
+    public void AddingANode_LeavesEveryOtherLineExactlyAsItWas()
+    {
+        const string Text = "(root\n\t(a\n\t\t(b 1)\n\t)\n\t(keep \"me\")\n)\n";
+
+        var document = SDocument.Parse(Text);
+        document.Root!.GetChild("a")!.CreateChild("c").AddValue("2");
+
+        Assert.Equal("(root\n\t(a\n\t\t(b 1)\n\t\t(c 2)\n\t)\n\t(keep \"me\")\n)\n", document.ToText());
+    }
+
+    [Fact]
+    public void ADocumentWithSeveralTopLevelForms_KeepsThemAtColumnZero()
+    {
+        const string Text = "(one 1)\n\n(two\n\t(x 1)\n)\n";
+
+        var document = SDocument.Parse(Text);
+        document[1].CreateChild("y").AddValue("2");
+
+        Assert.Equal("(one 1)\n\n(two\n\t(x 1)\n\t(y 2)\n)\n", document.ToText());
+    }
 }
