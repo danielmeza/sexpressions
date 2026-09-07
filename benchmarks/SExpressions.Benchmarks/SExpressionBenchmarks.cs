@@ -33,6 +33,7 @@ namespace SExpressions.Benchmarks
             new() { Format = SExpressionFormat.Canonical };
 
         private SDocument _document = null!;
+        private SDocument _editedDocument = null!;
 
         public IEnumerable<CorpusFile> Files()
         {
@@ -48,7 +49,19 @@ namespace SExpressions.Benchmarks
         /// they operate on is built once per parameter set rather than inside the measured region.
         /// </summary>
         [GlobalSetup]
-        public void Setup() => _document = new SExpressionParser().ParseAll(File.Text);
+        public void Setup()
+        {
+            _document = new SExpressionParser().ParseAll(File.Text);
+
+            // A second copy with exactly one value changed, for the write path that has real work to
+            // do. Writing never clears the dirty flag, so this document stays in the same state
+            // across iterations and every iteration measures the same partial rebuild.
+            _editedDocument = new SExpressionParser().ParseAll(File.Text);
+            _editedDocument.Find($"{RootToken}/uuid")!.SetValue(0, "00000000-0000-0000-0000-000000000001");
+        }
+
+        /// <summary>The head of the single top-level form in a .kicad_sch file.</summary>
+        private const string RootToken = "kicad_sch";
 
         /// <summary>Full-fidelity parse: source spans recorded, atom strings pooled.</summary>
         [Benchmark(Description = "Parse (fidelity)")]
@@ -63,19 +76,34 @@ namespace SExpressions.Benchmarks
         public string WriteCanonical() => new SExpressionWriter(CanonicalOptions).Write(_document);
 
         /// <summary>
-        /// Write back preserving the original formatting. On an unmodified document this is the path
-        /// that reuses source spans instead of rebuilding text, which is the point of the design.
+        /// Write back an untouched document. This is the fast path the design exists for: nothing is
+        /// dirty, so the writer hands back the original source instead of rendering anything, and the
+        /// cost is independent of file size. Read it as "proof the fast path is O(1)", not as a
+        /// throughput number - it is not writing 142 KB in single-digit nanoseconds, it is writing
+        /// nothing at all.
         /// </summary>
-        [Benchmark(Description = "Write (format-preserving)")]
-        public string WritePreserving() => new SExpressionWriter().Write(_document);
+        [Benchmark(Description = "Write (preserving, unmodified)")]
+        public string WritePreservingUnmodified() => new SExpressionWriter().Write(_document);
+
+        /// <summary>
+        /// Write back a document with one value changed: the writer re-renders the forms on the path
+        /// to the edit and splices the untouched source around them. This is the number that matters
+        /// for an edit-and-save workload.
+        /// </summary>
+        [Benchmark(Description = "Write (preserving, one edit)")]
+        public string WritePreservingAfterEdit() => new SExpressionWriter().Write(_editedDocument);
 
         /// <summary>Parse and write back: the end-to-end cost of touching a file at all.</summary>
         [Benchmark(Description = "Round trip (parse + preserving write)")]
         public string RoundTrip() => new SExpressionParser().ParseAll(File.Text).ToText();
 
-        /// <summary>Path lookup over the parsed tree.</summary>
-        [Benchmark(Description = "Query: FindAll(\"symbol\")")]
-        public int QueryFindAll() => _document.FindAll("symbol").Count();
+        /// <summary>
+        /// Path lookup over the parsed tree. The path is rooted at the top-level form, so it is
+        /// "kicad_sch/symbol" rather than "symbol" - the latter matches nothing and would benchmark
+        /// an empty enumeration.
+        /// </summary>
+        [Benchmark(Description = "Query: FindAll(\"kicad_sch/symbol\")")]
+        public int QueryFindAll() => _document.FindAll($"{RootToken}/symbol").Count();
 
         /// <summary>Full recursive walk looking for one token - the expensive query shape.</summary>
         [Benchmark(Description = "Query: Descendants(\"property\")")]
