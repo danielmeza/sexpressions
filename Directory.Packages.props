@@ -1,0 +1,28 @@
+<Project>
+
+  <!-- Central Package Management. Every PackageReference in this repository omits its Version and
+       takes it from the matching PackageVersion below, so a version lives in exactly one place and
+       two projects can never drift onto different builds of the same package.
+
+       Transitive pinning is deliberately NOT enabled. It would promote every transitive dependency
+       to a direct one in the packed nuspec, which changes what consumers of the SExpressions
+       package resolve - a packaging decision, not a tidiness one. SExpressions has no runtime
+       dependencies at all, so there is nothing for it to buy here. -->
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+
+  <!-- Test-only. None of these reach the shipped package. -->
+  <ItemGroup>
+    <PackageVersion Include="coverlet.collector" Version="10.0.1" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.0" />
+  </ItemGroup>
+
+  <!-- Benchmark-only. -->
+  <ItemGroup>
+    <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
+  </ItemGroup>
+
+</Project>
