@@ -2,7 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 
-namespace SExpressionSharp
+namespace SExpressions
 {
     /// <summary>
     /// The ordered contents of a form: atoms, nested forms and comments as they appear in the source.

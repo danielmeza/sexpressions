@@ -1,4 +1,4 @@
-namespace SExpressionSharp.Tests;
+namespace SExpressions.Tests;
 
 /// <summary>
 /// The acceptance suite. Everything here is measured against the real KiCad 10.0.6 corpus:

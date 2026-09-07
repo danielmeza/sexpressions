@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace SExpressionSharp.Tests;
+namespace SExpressions.Tests;
 
 /// <summary>
 /// Locates the real KiCad 10 corpus and the kicad-cli shim. Every corpus-backed test skips

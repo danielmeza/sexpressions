@@ -1,6 +1,6 @@
 using System;
 
-namespace SExpressionSharp
+namespace SExpressions
 {
     /// <summary>
     /// Thrown when S-expression text cannot be parsed. Derives from <see cref="FormatException"/>

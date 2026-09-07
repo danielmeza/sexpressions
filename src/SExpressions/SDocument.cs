@@ -5,7 +5,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace SExpressionSharp
+namespace SExpressions
 {
     /// <summary>
     /// A whole S-expression file: every top-level form in order, plus the comments and whitespace

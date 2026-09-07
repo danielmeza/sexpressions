@@ -1,6 +1,6 @@
 using System;
 
-namespace SExpressionSharp
+namespace SExpressions
 {
     /// <summary>
     /// What an <see cref="SItem"/> holds.

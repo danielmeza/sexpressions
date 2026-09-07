@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SExpressions/SExpressions.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SExpressions.Tests/SExpressions.Tests.csproj" />
+  </Folder>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/SExpressions.Benchmarks/SExpressions.Benchmarks.csproj" />
+  </Folder>
+</Solution>

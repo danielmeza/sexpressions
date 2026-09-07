@@ -5,7 +5,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace SExpressionSharp
+namespace SExpressions
 {
     /// <summary>
     /// How <see cref="SExpressionWriter"/> lays text out.
