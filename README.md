@@ -64,6 +64,15 @@ around it. Measured on a real 145,522-byte schematic: rewriting the root `uuid` 
 `SExpressionFormat.Canonical` reformats everything from the tree instead, with `Indent` (default
 tab) and `NewLine` (default `\n`) under your control.
 
+**Composing works the same way as editing.** Adding a node has no original gap to splice into, so
+the writer synthesises the one gap the new node needs — copied from the separator its neighbours
+already use — and leaves every other span alone. Removing a node takes that node's own separator
+with it and nothing else. A sibling nobody touched keeps its bytes *and* its indentation, a form
+whose children were all on one line stays on one line, blank lines between siblings survive, and the
+container's closing paren keeps its column. Measured on a 170,001-byte schematic: appending one
+`(wire …)` to the root is **+150 bytes across 11 new lines and 0 rewritten ones**, and the whole
+diff is a single contiguous insertion.
+
 ### Query and mutation
 
 ```csharp
@@ -95,7 +104,7 @@ others see it. Typed reads and writes use the invariant culture, always.
 
 ## Evidence
 
-- **187 / 187 tests pass** (`dotnet test SExpressions.slnx -c Release`, ~59 s with the corpus).
+- **239 / 239 tests pass** (`dotnet test SExpressions.slnx -c Release`, ~62 s with the corpus).
 - **Byte-identical round trip over 52 real KiCad 10.0.6 files — 1,968,451 bytes**: schematics,
   boards, a symbol library, a worksheet and design rules. Asserted, not claimed.
 - Boards and schematics are re-opened with `kicad-cli` after a *canonical* round trip and their
@@ -193,9 +202,10 @@ Measured, not guessed. Each item below was reproduced against this build.
   pull-based reader, and no way to parse a file larger than memory.
 - **`SExpressionParser` is not thread-safe.** Instances are cheap; give each thread its own. The
   parsed tree is not synchronised for concurrent mutation either.
-- **A child can only be removed by token** (`RemoveChild` removes the first, `RemoveChildren`
-  removes all). There is no remove-by-reference and no insert-a-child-at-index — drop to
-  `node.Items` (an `IList<SItem>`) for positional work.
+- **`SExpression` itself only removes a child by token** (`RemoveChild` removes the first,
+  `RemoveChildren` removes all). For positional work use the views: `node.Children` is an
+  `IList<SExpression>` (`Insert`, `Remove`, `RemoveAt`, `Clear`) and `node.Items` an `IList<SItem>`,
+  which is the only one that can place a comment or an atom at an exact index.
 - **`Parent` is `null` for a top-level form**, by design: the document's container is not a form and
   is not exposed.
 - **No schema, no validation, no typed mapping.** There is no POCO binder, no attribute-driven
