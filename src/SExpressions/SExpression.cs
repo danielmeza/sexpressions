@@ -27,8 +27,13 @@ namespace SExpressions
         {
             None = 0,
             Dirty = 1,
-            LayoutInvalid = 2,
+
+            /// <summary>The <c>(token</c> that opens this form in the source no longer matches.</summary>
+            HeaderInvalid = 2,
             DocumentContainer = 4,
+
+            /// <summary>Items have been inserted or removed, so the source no longer lists the same ones.</summary>
+            ItemsChanged = 8,
         }
 
         private SItem[] _items = Array.Empty<SItem>();
@@ -86,7 +91,7 @@ namespace SExpressions
                 }
 
                 _token = value;
-                _flags |= Flag.LayoutInvalid;
+                _flags |= Flag.HeaderInvalid;
                 MarkDirty();
             }
         }
@@ -148,7 +153,15 @@ namespace SExpressions
 
         internal SItem[] ItemsArray => _items;
 
-        internal bool LayoutInvalid => (_flags & Flag.LayoutInvalid) != 0;
+        /// <summary>True when the source text of this form's <c>(token</c> is stale and cannot be copied.</summary>
+        internal bool HeaderInvalid => (_flags & Flag.HeaderInvalid) != 0;
+
+        /// <summary>
+        /// True when items have been inserted or removed since the parse. The gaps the source
+        /// records still describe the items that stayed, so the writer can splice them; it is only
+        /// the gap around a new item that has to be synthesised.
+        /// </summary>
+        internal bool ItemsChanged => (_flags & Flag.ItemsChanged) != 0;
 
         internal bool IsDocumentContainer => (_flags & Flag.DocumentContainer) != 0;
 
@@ -712,7 +725,7 @@ namespace SExpressions
             Array.Copy(_items, index, next, index + 1, _items.Length - index);
             _items = next;
 
-            _flags |= Flag.LayoutInvalid;
+            _flags |= Flag.ItemsChanged;
             MarkDirty();
         }
 
@@ -727,7 +740,7 @@ namespace SExpressions
             Array.Copy(_items, index + 1, next, index, _items.Length - index - 1);
             _items = next;
 
-            _flags |= Flag.LayoutInvalid;
+            _flags |= Flag.ItemsChanged;
             MarkDirty();
         }
 
@@ -756,7 +769,7 @@ namespace SExpressions
             }
 
             _items = Array.Empty<SItem>();
-            _flags |= Flag.LayoutInvalid;
+            _flags |= Flag.ItemsChanged;
             MarkDirty();
         }
 
