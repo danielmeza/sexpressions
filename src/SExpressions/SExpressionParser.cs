@@ -1,8 +1,6 @@
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -97,15 +95,6 @@ namespace SExpressions
         /// at 12 it carries none.
         /// </remarks>
         private const int CharsPerItem = 12;
-
-        /// <summary>Everything that ends a bare atom. Vectorised by <see cref="SearchValues"/>.</summary>
-        private static readonly SearchValues<char> Delimiters = SearchValues.Create(" \t\r\n()");
-
-        private static readonly SearchValues<char> Whitespace = SearchValues.Create(" \t\r\n");
-
-        private static readonly SearchValues<char> QuoteOrEscape = SearchValues.Create("\"\\");
-
-        private static readonly SearchValues<char> LineBreak = SearchValues.Create("\r\n");
 
         private readonly SExpressionParserOptions _options;
 
@@ -248,7 +237,7 @@ namespace SExpressions
 
             while (true)
             {
-                SkipWhitespace(s, ref pos);
+                SExpressionSyntax.SkipWhitespace(s, ref pos);
                 if (pos >= s.Length)
                 {
                     if (topLevel)
@@ -281,7 +270,7 @@ namespace SExpressions
                 if (hasComments && c == commentChar)
                 {
                     var commentStart = pos;
-                    var lineEnd = s[pos..].IndexOfAny(LineBreak);
+                    var lineEnd = s[pos..].IndexOfAny(SExpressionSyntax.LineBreak);
                     var end = lineEnd < 0 ? s.Length : pos + lineEnd;
                     Push(SItem.ParsedComment(s.Slice(commentStart + 1, end - commentStart - 1).ToString(), commentStart, end - commentStart));
                     pos = end;
@@ -310,7 +299,7 @@ namespace SExpressions
             var s = src.AsSpan();
             var start = pos;
             pos++;
-            SkipWhitespace(s, ref pos);
+            SExpressionSyntax.SkipWhitespace(s, ref pos);
 
             var expression = new SExpression(ReadBare(src, ref pos));
             var scratchBase = _scratchTop;
@@ -331,8 +320,7 @@ namespace SExpressions
         {
             var s = src.AsSpan();
             var start = pos;
-            var rel = s[pos..].IndexOfAny(Delimiters);
-            pos = rel < 0 ? s.Length : pos + rel;
+            pos = SExpressionSyntax.EndOfBareAtom(s, pos);
             return Intern(s.Slice(start, pos - start));
         }
 
@@ -340,7 +328,7 @@ namespace SExpressions
         {
             var s = src.AsSpan();
             var contentStart = pos + 1;
-            var rel = s[contentStart..].IndexOfAny(QuoteOrEscape);
+            var rel = s[contentStart..].IndexOfAny(SExpressionSyntax.QuoteOrEscape);
             if (rel < 0)
             {
                 throw new SExpressionFormatException("Unterminated quoted string", src, pos);
@@ -357,42 +345,35 @@ namespace SExpressions
             return ReadQuotedEscaped(src, ref pos);
         }
 
+        /// <summary>
+        /// Reads a quoted atom that contains at least one backslash: finds the closing quote, then
+        /// decodes.
+        /// </summary>
+        /// <remarks>
+        /// The scan and the decode are separate so that the decoding rule lives in exactly one place
+        /// -- <see cref="SExpressionSyntax.Unescape"/> -- which is also the one the streaming reader
+        /// applies. Two copies of it would let a document inspected with the reader and edited
+        /// through the tree disagree about a single byte, which is the one thing this library
+        /// promises will not happen.
+        /// </remarks>
         private static string ReadQuotedEscaped(string src, ref int pos)
         {
             var s = src.AsSpan();
             var start = pos;
             var i = pos + 1;
-            var sb = new StringBuilder(32);
 
             while (i < s.Length)
             {
-                var c = s[i];
-                if (c == '"')
+                if (s[i] == '"')
                 {
+                    var text = SExpressionSyntax.Unescape(s[(start + 1)..i]);
                     pos = i + 1;
-                    return sb.ToString();
+                    return text;
                 }
 
-                if (c == '\\' && i + 1 < s.Length)
-                {
-                    var next = s[i + 1];
-
-                    // Only the two escapes KiCad actually emits are decoded, so encoding them again
-                    // is an exact inverse. Anything else keeps its backslash and stays as written.
-                    if (next is '\\' or '"')
-                    {
-                        sb.Append(next);
-                        i += 2;
-                        continue;
-                    }
-
-                    sb.Append(c).Append(next);
-                    i += 2;
-                    continue;
-                }
-
-                sb.Append(c);
-                i++;
+                // A backslash always consumes the character after it, whether or not it is an escape
+                // this format decodes: that is what stops a \" being read as the closing quote.
+                i += s[i] == '\\' && i + 1 < s.Length ? 2 : 1;
             }
 
             throw new SExpressionFormatException("Unterminated quoted string", src, start);
@@ -505,17 +486,6 @@ namespace SExpressions
         /// three extra array headers on that schematic.
         /// </remarks>
         private const int MaxBlock = 4096;
-
-        private static void SkipWhitespace(ReadOnlySpan<char> s, ref int pos)
-        {
-            if (pos >= s.Length)
-            {
-                return;
-            }
-
-            var rel = s[pos..].IndexOfAnyExcept(Whitespace);
-            pos = rel < 0 ? s.Length : pos + rel;
-        }
 
         // ----------------------------------------------------------------------------- string pool
 
