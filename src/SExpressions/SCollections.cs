@@ -25,7 +25,7 @@ namespace SExpressions
 
 
         /// <inheritdoc />
-        public int Count => Owner.ItemsArray.Length;
+        public int Count => Owner.ItemCount;
 
         /// <inheritdoc />
         public bool IsReadOnly => false;
@@ -33,12 +33,12 @@ namespace SExpressions
         /// <inheritdoc />
         public SItem this[int index]
         {
-            get => Owner.ItemsArray[index];
+            get => Owner.ItemsSpan[index];
             set => Owner.ReplaceItem(index, value);
         }
 
         /// <inheritdoc />
-        public void Add(SItem item) => Owner.InsertItem(Owner.ItemsArray.Length, item);
+        public void Add(SItem item) => Owner.InsertItem(Owner.ItemCount, item);
 
         /// <inheritdoc />
         public void Insert(int index, SItem item) => Owner.InsertItem(index, item);
@@ -53,10 +53,16 @@ namespace SExpressions
         public bool Contains(SItem item) => IndexOf(item) >= 0;
 
         /// <inheritdoc />
-        public int IndexOf(SItem item) => Array.IndexOf(Owner.ItemsArray, item);
+        public int IndexOf(SItem item) => Owner.ItemsSpan.IndexOf(item);
 
         /// <inheritdoc />
-        public void CopyTo(SItem[] array, int arrayIndex) => Owner.ItemsArray.CopyTo(array, arrayIndex);
+        public void CopyTo(SItem[] array, int arrayIndex)
+        {
+            // Checked here rather than left to the span: AsSpan on a null array is an empty span, so
+            // without this a null destination would report "destination too short".
+            ArgumentNullException.ThrowIfNull(array);
+            Owner.ItemsSpan.CopyTo(array.AsSpan(arrayIndex));
+        }
 
         /// <inheritdoc />
         public bool Remove(SItem item)
@@ -72,13 +78,21 @@ namespace SExpressions
         }
 
         /// <inheritdoc />
-        public IEnumerator<SItem> GetEnumerator() => ((IEnumerable<SItem>)Owner.ItemsArray).GetEnumerator();
+        public IEnumerator<SItem> GetEnumerator() => Enumerate(Owner).GetEnumerator();
 
-        IEnumerator IEnumerable.GetEnumerator() => Owner.ItemsArray.GetEnumerator();
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
         /// <summary>Gets the items as a span, for allocation-free iteration.</summary>
         /// <returns>The span.</returns>
-        public ReadOnlySpan<SItem> AsSpan() => Owner.ItemsArray;
+        public ReadOnlySpan<SItem> AsSpan() => Owner.ItemsSpan;
+
+        private static IEnumerable<SItem> Enumerate(SExpression owner)
+        {
+            for (var i = 0; i < owner.ItemCount; i++)
+            {
+                yield return owner.ItemAt(i);
+            }
+        }
     }
 
     /// <summary>
@@ -161,10 +175,9 @@ namespace SExpressions
         /// <inheritdoc />
         public void Clear()
         {
-            var items = Owner.ItemsArray;
-            for (var i = items.Length - 1; i >= 0; i--)
+            for (var i = Owner.ItemCount - 1; i >= 0; i--)
             {
-                if (Owner.ItemsArray[i].Kind == SItemKind.Atom)
+                if (Owner.ItemAt(i).Kind == SItemKind.Atom)
                 {
                     Owner.RemoveItemAt(i);
                 }
@@ -175,7 +188,7 @@ namespace SExpressions
         public int IndexOf(string item)
         {
             var seen = 0;
-            foreach (var i in Owner.ItemsArray)
+            foreach (var i in Owner.ItemsSpan)
             {
                 if (i.Kind != SItemKind.Atom)
                 {
@@ -226,8 +239,9 @@ namespace SExpressions
 
         private static IEnumerable<string> Enumerate(SExpression owner)
         {
-            foreach (var i in owner.ItemsArray)
+            for (var n = 0; n < owner.ItemCount; n++)
             {
+                var i = owner.ItemAt(n);
                 if (i.Kind == SItemKind.Atom)
                 {
                     yield return i.Text!;
@@ -238,7 +252,7 @@ namespace SExpressions
         private int ItemIndexOf(int valueIndex)
         {
             var seen = 0;
-            var items = Owner.ItemsArray;
+            var items = Owner.ItemsSpan;
             for (var i = 0; i < items.Length; i++)
             {
                 if (items[i].Kind == SItemKind.Atom && seen++ == valueIndex)
@@ -282,7 +296,7 @@ namespace SExpressions
             get
             {
                 var i = ItemIndexOf(index);
-                return i >= 0 ? Owner.ItemsArray[i].Expression! : throw new ArgumentOutOfRangeException(nameof(index));
+                return i >= 0 ? Owner.ItemAt(i).Expression! : throw new ArgumentOutOfRangeException(nameof(index));
             }
 
             set
@@ -315,7 +329,7 @@ namespace SExpressions
         public void Insert(int index, SExpression item)
         {
             var i = ItemIndexOf(index);
-            Owner.InsertItem(i < 0 ? Owner.ItemsArray.Length : i, SItem.CreateExpression(item));
+            Owner.InsertItem(i < 0 ? Owner.ItemCount : i, SItem.CreateExpression(item));
         }
 
         /// <inheritdoc />
@@ -333,9 +347,9 @@ namespace SExpressions
         /// <inheritdoc />
         public void Clear()
         {
-            for (var i = Owner.ItemsArray.Length - 1; i >= 0; i--)
+            for (var i = Owner.ItemCount - 1; i >= 0; i--)
             {
-                if (Owner.ItemsArray[i].Kind == SItemKind.Expression)
+                if (Owner.ItemAt(i).Kind == SItemKind.Expression)
                 {
                     Owner.RemoveItemAt(i);
                 }
@@ -346,7 +360,7 @@ namespace SExpressions
         public int IndexOf(SExpression item)
         {
             var seen = 0;
-            foreach (var i in Owner.ItemsArray)
+            foreach (var i in Owner.ItemsSpan)
             {
                 if (i.Kind != SItemKind.Expression)
                 {
@@ -397,8 +411,9 @@ namespace SExpressions
 
         private static IEnumerable<SExpression> Enumerate(SExpression owner)
         {
-            foreach (var i in owner.ItemsArray)
+            for (var n = 0; n < owner.ItemCount; n++)
             {
+                var i = owner.ItemAt(n);
                 if (i.Kind == SItemKind.Expression)
                 {
                     yield return i.Expression!;
@@ -414,7 +429,7 @@ namespace SExpressions
             }
 
             var seen = 0;
-            var items = Owner.ItemsArray;
+            var items = Owner.ItemsSpan;
             for (var i = 0; i < items.Length; i++)
             {
                 if (items[i].Kind == SItemKind.Expression && seen++ == childIndex)

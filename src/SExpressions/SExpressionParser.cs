@@ -80,6 +80,24 @@ namespace SExpressions
         /// </remarks>
         private const int MaxRetainedScratch = ScratchSize * 4;
 
+        /// <summary>Smallest item block worth allocating.</summary>
+        private const int MinBlock = 8;
+
+        /// <summary>
+        /// Characters of source per item, used to size a document's first item block.
+        /// </summary>
+        /// <remarks>
+        /// MEASURED over a 65-file KiCad 10.0.6 corpus (203 875 items): 9.4-11.0 characters per item
+        /// for schematics, boards and the symbol library, 6.7 for the worksheet and 37.8-40.5 for the
+        /// comment-heavy design rules. This divisor is deliberately LOWER than any of them -- it
+        /// under-estimates every real file on purpose. An over-estimate is slack that is never
+        /// reclaimed, while an under-estimate costs one extra block whose size is extrapolated from
+        /// what the document has actually produced so far, which is accurate because density is
+        /// near-uniform within a file. Sized at 9 instead, the corpus carried 24.9% aggregate slack;
+        /// at 12 it carries none.
+        /// </remarks>
+        private const int CharsPerItem = 12;
+
         /// <summary>Everything that ends a bare atom. Vectorised by <see cref="SearchValues"/>.</summary>
         private static readonly SearchValues<char> Delimiters = SearchValues.Create(" \t\r\n()");
 
@@ -108,10 +126,22 @@ namespace SExpressions
         // one array probe and one comparison, which a Dictionary lookup could not match.
         private string[]? _cache;
 
-        // One growable stack for the whole parse. A form's items are pushed here and copied into an
-        // exactly-sized array when the form closes, so every node owns one array and no slack.
+        // One growable stack for the whole parse. A form's items are pushed here and copied into the
+        // document's item block when the form closes.
         private SItem[] _scratch = Array.Empty<SItem>();
         private int _scratchTop;
+
+        // The document's item block. Forms close in strict post-order, so copying each closing form's
+        // items to the end of one block gives every form a contiguous slice of it and replaces one
+        // array per form -- 7 071 of them on a 142 KB schematic -- with one array per document.
+        //
+        // This block is handed to the tree, so unlike _scratch it can never be pooled, retained on
+        // the thread or reused: the next parse would be writing into an array the last document is
+        // still reading. It is cleared from the instance in ReleaseBuffers for the same reason.
+        private SItem[] _block = Array.Empty<SItem>();
+        private int _blockTop;
+        private int _emitted;
+        private int _textLength;
 
         /// <summary>Creates a parser with default options.</summary>
         public SExpressionParser()
@@ -162,6 +192,7 @@ namespace SExpressions
 
                 var source = _options.TrackSource && text.Length <= SItem.MaxSourceLength ? text : null;
                 _scratchTop = 0;
+                _textLength = text.Length;
                 var pos = 0;
                 var start = _scratchTop;
                 ReadItems(text, ref pos, 0, topLevel: true, container);
@@ -170,7 +201,8 @@ namespace SExpressions
                     throw new SExpressionFormatException("Unbalanced ')'", text, pos);
                 }
 
-                container.SetParsed(Harvest(start), source, 0, text.Length);
+                Harvest(start, text.Length, out var block, out var offset, out var count);
+                container.SetParsed(block, offset, count, source, 0, text.Length);
                 return new SDocument(container);
             }
             finally
@@ -290,7 +322,8 @@ namespace SExpressions
             }
 
             pos++;
-            expression.SetParsed(Harvest(scratchBase), _options.TrackSource && src.Length <= SItem.MaxSourceLength ? src : null, start, pos - start);
+            Harvest(scratchBase, pos, out var block, out var offset, out var count);
+            expression.SetParsed(block, offset, count, _options.TrackSource && src.Length <= SItem.MaxSourceLength ? src : null, start, pos - start);
             return expression;
         }
 
@@ -376,8 +409,8 @@ namespace SExpressions
         }
 
         /// <summary>
-        /// Copies everything pushed since <paramref name="scratchBase"/> into an exactly-sized array
-        /// and pops the scratch stack back.
+        /// Copies everything pushed since <paramref name="scratchBase"/> to the end of the document's
+        /// item block, pops the scratch stack back, and reports the slice the closing form owns.
         /// </summary>
         /// <remarks>
         /// Nested forms are already parented by <see cref="ReadItems"/>, so the copy has no
@@ -389,24 +422,89 @@ namespace SExpressions
         /// <c>Buffer.Memmove</c> does costs more than the copy it saves.
         /// </para>
         /// </remarks>
-        private SItem[] Harvest(int scratchBase)
+        /// <param name="scratchBase">Where this form's items start on the scratch stack.</param>
+        /// <param name="pos">How far into the source the parse has read. Used to size a new block.</param>
+        /// <param name="block">The block the slice lives in.</param>
+        /// <param name="offset">Where the slice starts in <paramref name="block"/>.</param>
+        /// <param name="count">How long the slice is.</param>
+        private void Harvest(int scratchBase, int pos, out SItem[] block, out int offset, out int count)
         {
-            var count = _scratchTop - scratchBase;
+            count = _scratchTop - scratchBase;
             if (count == 0)
             {
-                return Array.Empty<SItem>();
+                block = Array.Empty<SItem>();
+                offset = 0;
+                return;
             }
 
-            var items = new SItem[count];
+            if (_blockTop + count > _block.Length)
+            {
+                GrowBlock(count, pos);
+            }
+
+            block = _block;
+            offset = _blockTop;
             var scratch = _scratch;
             for (var i = 0; i < count; i++)
             {
-                items[i] = scratch[scratchBase + i];
+                block[offset + i] = scratch[scratchBase + i];
             }
 
+            _blockTop = offset + count;
+            _emitted += count;
             _scratchTop = scratchBase;
-            return items;
         }
+
+        /// <summary>
+        /// Starts a new item block, big enough for the form that did not fit.
+        /// </summary>
+        /// <remarks>
+        /// The old block is NOT copied or resized. Every form harvested into it already holds a
+        /// reference to it and reads its own slice out of it, so the correct move is to leave it
+        /// alone and continue in a fresh one; the only cost of a growth is the tail of the old block
+        /// -- at most <paramref name="count"/> - 1 slots -- which nothing will ever use.
+        /// <para>
+        /// The size comes from what the document has produced so far rather than from doubling: at
+        /// the point the first block fills, <c>_emitted</c> items have come out of <c>pos</c>
+        /// characters, and extrapolating that to the whole text lands within a few percent because
+        /// item density inside one file barely varies. Doubling instead would overshoot by the
+        /// fraction of the file already read -- 60% or more of the block, on a file whose first
+        /// estimate was only slightly short.
+        /// </para>
+        /// </remarks>
+        private void GrowBlock(int count, int pos)
+        {
+            long wanted;
+            if (_emitted == 0 || pos <= 0)
+            {
+                wanted = _textLength / CharsPerItem;
+            }
+            else
+            {
+                var projected = (long)_emitted * _textLength / pos - _emitted;
+                wanted = projected + (projected >> 3);
+            }
+
+            // count last, and after the ceiling: a single form bigger than MaxBlock still has to fit
+            // in one contiguous slice, so it is the floor the cap cannot argue with.
+            var size = Math.Max(Math.Clamp(wanted, MinBlock, MaxBlock), count);
+            _block = new SItem[size];
+            _blockTop = 0;
+        }
+
+        /// <summary>
+        /// Ceiling on one item block. A document needing more than this simply gets more blocks.
+        /// </summary>
+        /// <remarks>
+        /// MEASURED, and the reason this is 4 096 rather than "as big as the document": the large
+        /// object heap starts at 85 000 bytes, an <see cref="SItem"/> is 16, and one block per
+        /// document put a 194 KB array on the LOH on every parse of a 142 KB schematic. That is a
+        /// Gen2 collection every seventeen parses -- 58.6 per 1 000 operations against zero before --
+        /// and it cost 40% of the parse time while the allocation figure went DOWN. 4 096 items is
+        /// 65 560 bytes with the array header, comfortably inside the small object heap, and it costs
+        /// three extra array headers on that schematic.
+        /// </remarks>
+        private const int MaxBlock = 4096;
 
         private static void SkipWhitespace(ReadOnlySpan<char> s, ref int pos)
         {
@@ -438,6 +536,11 @@ namespace SExpressions
             // Entries survive between parses: a stale entry is still a valid string, and the
             // comparison in Intern is what decides a hit, so there is nothing to invalidate.
             _cache = _options.PoolStrings ? t_cache ??= new string[CacheSize] : null;
+
+            // Always a fresh block. It belongs to the document that comes out of this parse.
+            _block = Array.Empty<SItem>();
+            _blockTop = 0;
+            _emitted = 0;
         }
 
         /// <summary>
@@ -458,6 +561,14 @@ namespace SExpressions
             Array.Clear(scratch);
             _scratch = Array.Empty<SItem>();
             _scratchTop = 0;
+
+            // The same retention trap as the scratch stack, one level up: the block holds every item
+            // in the document just built, so an instance that kept the reference would keep that
+            // whole tree and its source text alive until it was parsed over or collected. Dropping
+            // the reference is enough here -- the block is never reused, so there is nothing to wipe.
+            _block = Array.Empty<SItem>();
+            _blockTop = 0;
+            _emitted = 0;
 
             // Keep whichever buffer is larger, up to the cap: Push may have grown this one past the
             // thread's, and remembering that is what stops the next parse re-growing it. Past the cap

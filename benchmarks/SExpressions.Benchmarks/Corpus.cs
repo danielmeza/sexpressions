@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 
 namespace SExpressions.Benchmarks
 {
@@ -39,6 +41,43 @@ namespace SExpressions.Benchmarks
     {
         public const string LargeSchematic = "templates/orbion-esp32s3/orbion-esp32s3.kicad_sch";
         public const string SmallSchematic = "blocks/orbion-mcu.kicad_blocks/console-pads.kicad_block/console-pads.kicad_sch";
+
+
+        /// <summary>
+        /// Every real schematic in the corpus, largest-last in ordinal path order.
+        /// </summary>
+        /// <remarks>
+        /// MEASURED, and the reason this exists: every other benchmark here reparses ONE document,
+        /// which keeps the parser's atom cache maximally warm and its per-document buffers sized for
+        /// exactly that file. A consumer parses different files. PR #17 found the two shapes give
+        /// materially different answers -- -7.9% against -5.8% for the same change -- so a per-document
+        /// allocation change has to be read on this shape as well as on the single-file one.
+        /// <para>
+        /// The 1 KB floor drops four placeholder schematics (285-405 bytes) that hold a title block and
+        /// nothing else; including them would put four near-empty parses into every rotation and pull
+        /// the mean towards a document nobody edits.
+        /// </para>
+        /// </remarks>
+        public static IEnumerable<string> Schematics()
+        {
+            var root = RequireRoot();
+            foreach (var dir in new[] { "templates", "blocks" })
+            {
+                var full = Path.Combine(root, dir);
+                if (!Directory.Exists(full))
+                {
+                    continue;
+                }
+
+                foreach (var f in Directory.GetFiles(full, "*.kicad_sch", SearchOption.AllDirectories).OrderBy(x => x, StringComparer.Ordinal))
+                {
+                    if (new FileInfo(f).Length >= 1024)
+                    {
+                        yield return Path.GetRelativePath(root, f);
+                    }
+                }
+            }
+        }
 
         public static string RequireRoot()
         {
