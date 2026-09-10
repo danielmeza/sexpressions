@@ -3,8 +3,11 @@ name: CI
 on:
   push:
     branches: [master]
+  # Every pull request, not only the ones targeting master. A PR stacked on another PR's branch --
+  # which is how a change that depends on an unmerged one stays reviewable -- matched no trigger at
+  # all and reported "no checks reported", so the work least likely to be correct got the least
+  # validation.
   pull_request:
-    branches: [master]
 
 jobs:
   build:
