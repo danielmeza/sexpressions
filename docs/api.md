@@ -27,6 +27,7 @@ The types, and the reasoning behind them. The short version is in the [README](.
 | `SExpression.Parse` / `.Load` | First top-level form, from text or a file. |
 | `SDocument.Parse` / `.Load` / `.LoadAsync` | Every top-level form. |
 | `SExpressionParser.ParseAllAsync(TextReader)` | Async I/O; the parse itself is not incremental. |
+| `SExpressionParser.ClearThreadBuffers()` | Release this thread's atom cache and item scratch stack. |
 | `.ToText()` / `.ToText(options)` / `.Save` / `.SaveAsync` | Render, to string or to a file. |
 | `SExpressionWriter.WriteTo(TextWriter)` / `.WriteToFile` / `.WriteToFileAsync` | The writer directly. |
 
@@ -74,3 +75,16 @@ others see it. Typed reads and writes use the invariant culture, always.
 | `MaxDepth` | `256` | Nesting past this throws, as a guard against hostile input. |
 | `TrackSource` | `true` | Off drops the source reference — and with it the byte-identical write. |
 | `PoolStrings` | `true` | De-duplicates short atoms; roughly halves allocations on KiCad files. |
+
+**The parser's working buffers belong to the thread, not to the instance.** A parser takes the atom
+cache and the item scratch stack from thread-local storage for the duration of a parse, so
+`new SExpressionParser().ParseAll(text)` in a loop pays for them once rather than once per call.
+Two parsers on one thread are therefore not isolated from each other: nothing observable leaks — the
+scratch stack is wiped when a parse ends, and the cache only ever returns a string equal to the one
+just scanned — but they will hand out the same `string` instance for equal atoms.
+
+The cache holds up to 4096 strings of at most 32 characters, per thread. That is a few hundred KB at
+the very worst, and it is per thread rather than per process: the async entry points resume on a pool
+thread, so a long-running host can accumulate one cache per thread that has ever completed a parse.
+`SExpressionParser.ClearThreadBuffers()` gives the calling thread's buffers back; parsing after it is
+correct and simply pays to rebuild them.
