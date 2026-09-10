@@ -29,6 +29,9 @@ Measured, not guessed. Each item below was reproduced against this build.
 - **Nesting deeper than `MaxDepth` (256) throws** rather than parsing.
 - **A file longer than 134,217,727 characters silently loses source tracking**, and with it the
   byte-identical write — the span is packed into an `SItem` and cannot be represented past that.
+- **A single form cannot hold more than 134,217,727 items**, and throws if one would: the item count
+  shares an `int` with the node's flag bits. Reaching it takes a source of at least 268 MB holding
+  one form of nothing but atoms.
 - **Nothing is incremental.** Parsing materialises the whole file as a string and builds a tree
   several times its size; the async entry points are async *I/O* only. There is no streaming or
   pull-based reader, and no way to parse a file larger than memory.

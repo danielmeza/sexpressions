@@ -36,7 +36,18 @@ namespace SExpressions
             ItemsChanged = 8,
         }
 
-        // A parsed form holds a SLICE -- _offset and _count -- of one contiguous block shared with
+        private const int FlagShift = 4;
+        private const int FlagMask = (1 << FlagShift) - 1;
+
+        /// <summary>
+        /// The most items one form can hold, because the item count shares an <see cref="int"/> with
+        /// <see cref="Flag"/>. The same 2^27-1 bound <see cref="SItem.MaxSourceLength"/> already puts
+        /// on a tracked source span; reaching it takes a source of at least 268 MB holding one form
+        /// of nothing but atoms.
+        /// </summary>
+        internal const int MaxItemCount = int.MaxValue >> FlagShift;
+
+        // A parsed form holds a SLICE -- an offset and a count -- of one contiguous block shared with
         // every other form in its document, rather than an array of its own. MEASURED over 93 762
         // forms in a 65-file KiCad corpus: 48.8% of forms hold exactly ONE item, so the 24-byte array
         // header usually cost more than the 16-byte item it carried, and the headers alone were 18%
@@ -44,10 +55,17 @@ namespace SExpressions
         // array it owns; see InsertItem.
         private SItem[] _items = Array.Empty<SItem>();
         private int _offset;
-        private int _count;
+
+        // Item count in the top 28 bits, Flag in the bottom 4. MEASURED: with the count and the flags
+        // as separate fields this class is 72 bytes -- four references, four ints and a one-byte enum,
+        // which pads to 72 -- and with them in one int it is 64, what it was before a form carried a
+        // slice at all. On a 142 KB schematic those 8 bytes of padding were 7 071 x 8 = 56.6 KB, a
+        // third of everything slicing the item arrays saved. Nothing already here can absorb the
+        // flags: SourceStart carries a -1 sentinel and SourceLength is the whole document length on
+        // the container.
+        private int _countAndFlags;
         private string _token;
         private SExpression? _parent;
-        private Flag _flags;
 
         internal string? Source;
         internal int SourceStart = -1;
@@ -78,7 +96,7 @@ namespace SExpressions
             }
 
             _items = new SItem[values.Length];
-            _count = values.Length;
+            SetItemCount(values.Length);
             for (var i = 0; i < values.Length; i++)
             {
                 _items[i] = SItem.CreateAtom(values[i]);
@@ -100,7 +118,7 @@ namespace SExpressions
                 }
 
                 _token = value;
-                _flags |= Flag.HeaderInvalid;
+                Flags |= Flag.HeaderInvalid;
                 MarkDirty();
             }
         }
@@ -138,7 +156,7 @@ namespace SExpressions
             {
                 // Indexed rather than a foreach over ItemsSpan: this is an iterator, and the span
                 // would have to live across a yield.
-                for (var i = 0; i < _count; i++)
+                for (var i = 0; i < ItemCount; i++)
                 {
                     var item = ItemAt(i);
                     if (item.Kind == SItemKind.Comment)
@@ -153,7 +171,7 @@ namespace SExpressions
         /// True when this form (or anything under it) has been changed since it was parsed, or when
         /// it was never parsed at all. A writer reproduces an unmodified form byte for byte.
         /// </summary>
-        public bool IsModified => (_flags & Flag.Dirty) != 0 || Source is null;
+        public bool IsModified => (Flags & Flag.Dirty) != 0 || Source is null;
 
         /// <summary>True when this form was produced by a parser and still knows its source text.</summary>
         public bool HasSource => Source is not null && SourceStart >= 0;
@@ -169,10 +187,10 @@ namespace SExpressions
         /// which is why it is a span: nothing can store it, hand it out, or mistake its length for
         /// the block's.
         /// </summary>
-        internal ReadOnlySpan<SItem> ItemsSpan => _items.AsSpan(_offset, _count);
+        internal ReadOnlySpan<SItem> ItemsSpan => _items.AsSpan(_offset, ItemCount);
 
         /// <summary>How many items this form holds.</summary>
-        internal int ItemCount => _count;
+        internal int ItemCount => _countAndFlags >>> FlagShift;
 
         /// <summary>
         /// One item by index. Exists for the iterator methods, where a <c>ref struct</c> local cannot
@@ -181,18 +199,43 @@ namespace SExpressions
         internal SItem ItemAt(int index) => _items[_offset + index];
 
         /// <summary>True when the source text of this form's <c>(token</c> is stale and cannot be copied.</summary>
-        internal bool HeaderInvalid => (_flags & Flag.HeaderInvalid) != 0;
+        internal bool HeaderInvalid => (Flags & Flag.HeaderInvalid) != 0;
 
         /// <summary>
         /// True when items have been inserted or removed since the parse. The gaps the source
         /// records still describe the items that stayed, so the writer can splice them; it is only
         /// the gap around a new item that has to be synthesised.
         /// </summary>
-        internal bool ItemsChanged => (_flags & Flag.ItemsChanged) != 0;
+        internal bool ItemsChanged => (Flags & Flag.ItemsChanged) != 0;
 
-        internal bool IsDocumentContainer => (_flags & Flag.DocumentContainer) != 0;
+        internal bool IsDocumentContainer => (Flags & Flag.DocumentContainer) != 0;
 
-        internal void MarkAsDocumentContainer() => _flags |= Flag.DocumentContainer;
+        /// <summary>The flag bits packed alongside the item count.</summary>
+        private Flag Flags
+        {
+            get => (Flag)(_countAndFlags & FlagMask);
+            set => _countAndFlags = (_countAndFlags & ~FlagMask) | ((int)value & FlagMask);
+        }
+
+        /// <summary>
+        /// Sets the item count, keeping the flags packed beside it.
+        /// </summary>
+        /// <param name="count">The new count.</param>
+        /// <exception cref="SExpressionFormatException">
+        /// More than <see cref="MaxItemCount"/> items. Checked here rather than at each call site, so
+        /// that no path -- parse or mutation -- can write a count that silently truncates.
+        /// </exception>
+        private void SetItemCount(int count)
+        {
+            if ((uint)count > MaxItemCount)
+            {
+                throw new SExpressionFormatException($"A single form cannot hold more than {MaxItemCount} items.");
+            }
+
+            _countAndFlags = (count << FlagShift) | (_countAndFlags & FlagMask);
+        }
+
+        internal void MarkAsDocumentContainer() => Flags |= Flag.DocumentContainer;
 
         // ------------------------------------------------------------------- parsing entry points
 
@@ -239,7 +282,7 @@ namespace SExpressions
         /// <returns>An enumerable of matching child expressions.</returns>
         public IEnumerable<SExpression> GetChildren(string token)
         {
-            for (var i = 0; i < _count; i++)
+            for (var i = 0; i < ItemCount; i++)
             {
                 var item = ItemAt(i);
                 if (item.Kind == SItemKind.Expression && string.Equals(item.Expression!.Token, token, StringComparison.Ordinal))
@@ -289,7 +332,7 @@ namespace SExpressions
         /// <returns>The matching descendants.</returns>
         public IEnumerable<SExpression> Descendants(string? token = null)
         {
-            for (var i = 0; i < _count; i++)
+            for (var i = 0; i < ItemCount; i++)
             {
                 var item = ItemAt(i);
                 if (item.Kind != SItemKind.Expression)
@@ -575,7 +618,7 @@ namespace SExpressions
         /// <returns>This expression, for chaining.</returns>
         public SExpression AddComment(string text)
         {
-            InsertItem(_count, SItem.CreateComment(text));
+            InsertItem(ItemCount, SItem.CreateComment(text));
             return this;
         }
 
@@ -586,7 +629,7 @@ namespace SExpressions
         public void AddChild(SExpression child)
         {
             ArgumentNullException.ThrowIfNull(child);
-            InsertItem(_count, SItem.CreateExpression(child));
+            InsertItem(ItemCount, SItem.CreateExpression(child));
         }
 
         /// <summary>
@@ -630,7 +673,7 @@ namespace SExpressions
         public int RemoveChildren(string token)
         {
             var removed = 0;
-            for (var i = _count - 1; i >= 0; i--)
+            for (var i = ItemCount - 1; i >= 0; i--)
             {
                 var item = ItemAt(i);
                 if (item.Kind == SItemKind.Expression && string.Equals(item.Expression!.Token, token, StringComparison.Ordinal))
@@ -657,12 +700,13 @@ namespace SExpressions
                 Source = Source,
                 SourceStart = SourceStart,
                 SourceLength = SourceLength,
-                _flags = _flags & ~Flag.DocumentContainer,
-                _items = _count == 0 ? Array.Empty<SItem>() : new SItem[_count],
-                _count = _count,
+                _items = ItemCount == 0 ? Array.Empty<SItem>() : new SItem[ItemCount],
             };
 
-            for (var i = 0; i < _count; i++)
+            copy.Flags = Flags & ~Flag.DocumentContainer;
+            copy.SetItemCount(ItemCount);
+
+            for (var i = 0; i < ItemCount; i++)
             {
                 var item = ItemAt(i);
                 if (item.Kind == SItemKind.Expression)
@@ -679,7 +723,7 @@ namespace SExpressions
 
             if (IsDocumentContainer)
             {
-                copy._flags |= Flag.DocumentContainer;
+                copy.Flags |= Flag.DocumentContainer;
             }
 
             return copy;
@@ -762,37 +806,37 @@ namespace SExpressions
         internal void InsertItem(int index, SItem item)
         {
             ArgumentOutOfRangeException.ThrowIfNegative(index);
-            ArgumentOutOfRangeException.ThrowIfGreaterThan(index, _count);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(index, ItemCount);
             Attach(item);
 
             var current = ItemsSpan;
-            var next = new SItem[_count + 1];
+            var next = new SItem[ItemCount + 1];
             current[..index].CopyTo(next);
             next[index] = item;
             current[index..].CopyTo(next.AsSpan(index + 1));
             _items = next;
             _offset = 0;
-            _count = next.Length;
+            SetItemCount(next.Length);
 
-            _flags |= Flag.ItemsChanged;
+            Flags |= Flag.ItemsChanged;
             MarkDirty();
         }
 
         internal void RemoveItemAt(int index)
         {
             ArgumentOutOfRangeException.ThrowIfNegative(index);
-            ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, _count);
+            ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, ItemCount);
             var current = ItemsSpan;
             Detach(current[index]);
 
-            var next = _count == 1 ? Array.Empty<SItem>() : new SItem[_count - 1];
+            var next = ItemCount == 1 ? Array.Empty<SItem>() : new SItem[ItemCount - 1];
             current[..index].CopyTo(next);
             current[(index + 1)..].CopyTo(next.AsSpan(index));
             _items = next;
             _offset = 0;
-            _count = next.Length;
+            SetItemCount(next.Length);
 
-            _flags |= Flag.ItemsChanged;
+            Flags |= Flag.ItemsChanged;
             MarkDirty();
         }
 
@@ -823,8 +867,8 @@ namespace SExpressions
 
             _items = Array.Empty<SItem>();
             _offset = 0;
-            _count = 0;
-            _flags |= Flag.ItemsChanged;
+            SetItemCount(0);
+            Flags |= Flag.ItemsChanged;
             MarkDirty();
         }
 
@@ -841,7 +885,7 @@ namespace SExpressions
         {
             _items = block;
             _offset = offset;
-            _count = count;
+            SetItemCount(count);
             Source = source;
             SourceStart = start;
             SourceLength = length;
@@ -884,9 +928,9 @@ namespace SExpressions
         private void MarkDirty()
         {
             var node = this;
-            while (node is not null && (node._flags & Flag.Dirty) == 0)
+            while (node is not null && (node.Flags & Flag.Dirty) == 0)
             {
-                node._flags |= Flag.Dirty;
+                node.Flags |= Flag.Dirty;
                 node = node._parent;
             }
         }
