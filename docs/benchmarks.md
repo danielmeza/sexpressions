@@ -135,6 +135,29 @@ and **measured worse**: the enumerator becomes a field of a state machine that `
 allocates once per node, so 16 more bytes per node gave back every byte of the allocation win
 (565,760 -> 622,336 B) and cost 4% more time. It was deleted. The indexed loops stay.
 
+### The read-only path: tree or reader
+
+`SExpressionReader` builds no tree, so on a document that is read once and thrown away it removes the
+intermediate representation entirely. One measured operation is one pass over all 19 schematics
+(1.59 MB):
+
+| Method                         | Mean     | Gen0     | Gen1     | Gen2    | Allocated  |
+|------------------------------- |---------:|---------:|---------:|--------:|-----------:|
+| 'Scan: count symbols (tree)'   | 6.566 ms | 289.0625 | 226.5625 |       - | 14777912 B |
+| 'Scan: count symbols (reader)' | 3.187 ms |        - |        - |       - |      **0 B** |
+| 'Extract: properties (tree)'   | 7.215 ms | 335.9375 | 140.6250 | 46.8750 | 15040360 B |
+| 'Extract: properties (reader)' | 3.824 ms |  39.0625 |  35.1563 | 31.2500 |   676124 B |
+
+Two workloads on purpose, because only one of them can honestly be called zero allocation. `Scan`
+keeps nothing and allocates **literally zero bytes**. `Extract` keeps a record per `property` form,
+which is what a consumer does, and its 676 KB are the strings the caller asked for — the floor the
+reader cannot get under, and the same floor MessagePack has, since it allocates its output objects
+too. Time is -51.5% and -47.0%.
+
+Both halves are asserted to extract the same records over the whole corpus
+(`ReaderTests.Reader_AndTree_ExtractTheSameRecords`); otherwise the ratio would be a comparison of
+two different workloads.
+
 `Write (preserving, unmodified)` is the fast path this design exists for: nothing is dirty, so the
 writer hands back the original source instead of rendering anything, and the cost is independent of
 file size. Read it as "the fast path is O(1)", not as a throughput number.

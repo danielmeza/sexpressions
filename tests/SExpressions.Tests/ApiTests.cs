@@ -252,6 +252,34 @@ public class ApiTests
         Assert.Equal(Src + "\n", doc.ToText(Canonical));
     }
 
+    /// <summary>
+    /// The escape branches <see cref="EscapedQuotesRoundTripBothWays"/> does not reach. Only \" and
+    /// \\ are decoded; every other backslash keeps it and stays exactly as written, which is what
+    /// makes re-encoding an exact inverse. Format-preserving mode copies the source either way --
+    /// docs/limits.md records that the CANONICAL writer re-escapes a lone backslash, so this asserts
+    /// the preserving round trip and the decoded value, not canonical output.
+    /// </summary>
+    [Theory]
+    [InlineData("(x \"c:\\path\")", "c:\\path")]          // backslash that introduces nothing
+    [InlineData("(x \"a\\\\b\")", "a\\b")]                  // the one other decoded escape
+    [InlineData("(x \"a\\\\\")", "a\\")]                     // a decoded escape right before the closing quote
+    [InlineData("(x \"\\\\\\\"\")", "\\\"")]                  // backslash then escaped quote
+    public void BackslashesThatAreNotEscapes_KeepTheirBytes(string src, string expected)
+    {
+        var doc = SDocument.Parse(src);
+
+        Assert.Equal(expected, doc.Root!.GetValue(0));
+        Assert.Equal(src, doc.ToText());
+    }
+
+    [Fact]
+    public void ABackslashDoesNotLetTheClosingQuoteBeMissed()
+    {
+        // The trap: "a\" ends with an ESCAPED quote, so the string is unterminated and the parser
+        // must say so rather than stopping at the quote the backslash consumed.
+        Assert.Throws<SExpressionFormatException>(() => SDocument.Parse("(x \"a\\\")"));
+    }
+
     [Fact]
     public async Task TheAsyncPathReadsAndWritesTheSameBytes()
     {

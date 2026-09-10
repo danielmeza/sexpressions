@@ -96,6 +96,13 @@ Full API reference: [docs/api.md](docs/api.md).
 ## Performance
 
 Roughly 65 MB/s parsing on a 145 KB KiCad schematic, and a save touches only the bytes that changed.
+
+For a document you read once and throw away, `SExpressionReader` — a `ref struct` over
+`ReadOnlySpan<char>`, the `Utf8JsonReader` pattern — skips the tree entirely: counting every `symbol`
+across 1.59 MB of schematics costs **zero bytes** against 14.8 MB through the tree, and half the
+time. It is read-only; editing still goes through the tree, which is what the byte-identical write is
+built on.
+
 Numbers, methodology and the BenchmarkDotNet project: [docs/benchmarks.md](docs/benchmarks.md).
 
 ## Limits

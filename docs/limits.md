@@ -32,9 +32,13 @@ Measured, not guessed. Each item below was reproduced against this build.
 - **A single form cannot hold more than 134,217,727 items**, and throws if one would: the item count
   shares an `int` with the node's flag bits. Reaching it takes a source of at least 268 MB holding
   one form of nothing but atoms.
-- **Nothing is incremental.** Parsing materialises the whole file as a string and builds a tree
-  several times its size; the async entry points are async *I/O* only. There is no streaming or
-  pull-based reader, and no way to parse a file larger than memory.
+- **Nothing is incremental over I/O.** Both APIs need the whole file in memory as a `string` or a
+  `ReadOnlySpan<char>` first, and the async entry points are async *I/O* only, so there is no way to
+  parse a file larger than memory. `SExpressionReader` is pull-based and builds no tree, which
+  removes the several-times-the-file *tree*, not the file itself.
+- **`SExpressionReader` is read-only, and deliberately.** It cannot edit, and there is no writer that
+  takes one: the byte-identical write is built on the source spans the tree remembers. A consumer
+  that changes a document parses it.
 - **`SExpressionParser` is not thread-safe.** Instances are cheap; give each thread its own. The
   parsed tree is not synchronised for concurrent mutation either.
 - **`SExpression` itself only removes a child by token** (`RemoveChild` removes the first,

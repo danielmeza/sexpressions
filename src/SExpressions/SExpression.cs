@@ -456,27 +456,8 @@ namespace SExpressions
         /// Parses the same boolean spellings <see cref="GetValueAsBool"/> reads: <c>yes</c>/<c>true</c>/<c>1</c>
         /// as true, <c>no</c>/<c>false</c>/<c>0</c> as false (words case-insensitive), anything else unparsed.
         /// </summary>
-        private static bool TryParseKiCadBool(string raw, out bool value)
-        {
-            if (string.Equals(raw, "yes", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(raw, "1", StringComparison.Ordinal))
-            {
-                value = true;
-                return true;
-            }
-
-            if (string.Equals(raw, "no", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(raw, "false", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(raw, "0", StringComparison.Ordinal))
-            {
-                value = false;
-                return true;
-            }
-
-            value = false;
-            return false;
-        }
+        private static bool TryParseKiCadBool(string raw, out bool value) =>
+            SExpressionSyntax.TryParseBool(raw, out value);
 
         /// <summary>
         /// Reads the value at <paramref name="index"/> as <typeparamref name="T"/>, or returns <paramref name="fallback"/>.
