@@ -225,7 +225,7 @@ namespace SExpressions
 
         private bool CanSplice(SExpression e) =>
             _options.Format != SExpressionFormat.Canonical && e.HasSource && !e.HeaderInvalid
-            && (e.ItemsArray.Length > 0 || e.ItemsChanged);
+            && (e.ItemCount > 0 || e.ItemsChanged);
 
         /// <summary>
         /// Rebuilds a changed form out of the source it came from. Each item that still holds its
@@ -241,7 +241,7 @@ namespace SExpressions
             var src = e.Source!;
             var start = e.SourceStart;
             var end = start + e.SourceLength;
-            var items = e.ItemsArray;
+            var items = e.ItemsSpan;
 
             // The document container is synthetic: it holds the top-level forms but is not a form
             // itself, so it has neither a "(token" to open it nor a ")" to close it.
@@ -344,7 +344,7 @@ namespace SExpressions
         private int AppendSynthesizedSeparator(
             StringBuilder sb,
             string src,
-            SItem[] items,
+            ReadOnlySpan<SItem> items,
             int index,
             int bodyStart,
             int bodyEnd,
@@ -388,7 +388,7 @@ namespace SExpressions
         /// that will FOLLOW the new item is preferred over the one behind it, because that is the
         /// slot the new item is taking and the sibling then keeps its own bytes unchanged.
         /// </summary>
-        private static bool TryNeighbourSeparator(string src, SItem[] items, int index, int bodyStart, out ReadOnlySpan<char> separator)
+        private static bool TryNeighbourSeparator(string src, ReadOnlySpan<SItem> items, int index, int bodyStart, out ReadOnlySpan<char> separator)
         {
             var kind = items[index].Kind;
             if (TryNeighbourSeparator(src, items, index, bodyStart, kind, out separator))
@@ -403,7 +403,7 @@ namespace SExpressions
                 && TryNeighbourSeparator(src, items, index, bodyStart, null, out separator);
         }
 
-        private static bool TryNeighbourSeparator(string src, SItem[] items, int index, int bodyStart, SItemKind? kind, out ReadOnlySpan<char> separator)
+        private static bool TryNeighbourSeparator(string src, ReadOnlySpan<SItem> items, int index, int bodyStart, SItemKind? kind, out ReadOnlySpan<char> separator)
         {
             for (var i = index + 1; i < items.Length; i++)
             {
@@ -511,7 +511,7 @@ namespace SExpressions
             sb.Append('(').Append(e.Token);
 
             var multiline = false;
-            foreach (var item in e.ItemsArray)
+            foreach (var item in e.ItemsSpan)
             {
                 if (item.Kind != SItemKind.Atom)
                 {
@@ -524,7 +524,7 @@ namespace SExpressions
             // never follow it with just a space, or it would be swallowed into the comment text on
             // re-parse. It has to start fresh on its own line instead.
             var previousWasComment = false;
-            foreach (var item in e.ItemsArray)
+            foreach (var item in e.ItemsSpan)
             {
                 if (item.Kind == SItemKind.Atom)
                 {
@@ -568,7 +568,7 @@ namespace SExpressions
         private void AppendDocumentCanonical(SExpression container, StringBuilder sb)
         {
             var first = true;
-            foreach (var item in container.ItemsArray)
+            foreach (var item in container.ItemsSpan)
             {
                 if (!first)
                 {

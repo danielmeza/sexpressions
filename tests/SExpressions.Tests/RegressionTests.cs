@@ -377,4 +377,188 @@ public class RegressionTests
         const string Small = "(a (b 1))\n";
         Assert.Equal(Small, SDocument.Parse(Small).ToText());
     }
+
+    // ------------------------------------------------------- one item block per document, sliced
+
+    /// <summary>
+    /// Sibling forms take slices of ONE block, so their items sit in the same array with nothing
+    /// between them. Each form must still see exactly its own, including the empty one -- an
+    /// off-by-one in either direction reads a neighbour's item rather than running off the end,
+    /// which is the failure this shape exists to catch.
+    /// </summary>
+    [Fact]
+    public void FormsSharingOneItemBlock_EachSeeOnlyTheirOwnItems()
+    {
+        var doc = SDocument.Parse("(root (a 1) (b 2 3) (c) (d 4 5 6))\n");
+        var root = doc.Root!;
+
+        Assert.Equal(4, root.Items.Count);
+        Assert.Equal(new[] { "1" }, root.GetChild("a")!.Values.ToArray());
+        Assert.Equal(new[] { "2", "3" }, root.GetChild("b")!.Values.ToArray());
+        Assert.Empty(root.GetChild("c")!.Items);
+        Assert.Equal(new[] { "4", "5", "6" }, root.GetChild("d")!.Values.ToArray());
+    }
+
+    /// <summary>
+    /// Replacing an atom writes straight into the shared block, because the slot belongs to that one
+    /// form. The bytes around it -- its siblings' slices in the same array -- must not move.
+    /// </summary>
+    [Fact]
+    public void ReplacingAValue_WritesIntoTheSharedBlockWithoutDisturbingNeighbours()
+    {
+        var doc = SDocument.Parse("(root (a 1) (b 2) (c 3))\n");
+
+        doc.Root!.GetChild("b")!.SetValue(0, "9");
+
+        Assert.Equal("(root (a 1) (b 9) (c 3))\n", doc.ToText());
+    }
+
+    /// <summary>
+    /// Inserting copies the form out of the block it was sharing. Its siblings keep reading their own
+    /// slices out of that block, and everything but the edit still comes back byte for byte.
+    /// </summary>
+    [Fact]
+    public void EditingOneFormInASharedBlock_LeavesItsSiblingsAlone()
+    {
+        var doc = SDocument.Parse("(root\n\t(a 1)\n\t(b 2)\n\t(c 3)\n)\n");
+
+        doc.Root!.GetChild("b")!.AddValue("9");
+        var written = doc.ToText();
+
+        Assert.Contains("(a 1)", written);
+        Assert.Contains("(c 3)", written);
+
+        var reparsed = SDocument.Parse(written);
+        Assert.Equal("1", reparsed.Root!.GetChild("a")!.GetValue(0));
+        Assert.Equal(new[] { "2", "9" }, reparsed.Root.GetChild("b")!.Values.ToArray());
+        Assert.Equal("3", reparsed.Root.GetChild("c")!.GetValue(0));
+    }
+
+    /// <summary>
+    /// Removing an item detaches the form from the block as well, and the forms that stay behind in
+    /// that block must be unaffected.
+    /// </summary>
+    [Fact]
+    public void RemovingAnItemFromASharedBlock_LeavesItsSiblingsAlone()
+    {
+        var doc = SDocument.Parse("(root (a 1) (b 2 3) (c 4))\n");
+
+        Assert.True(doc.Root!.GetChild("b")!.Values.Remove("2"));
+
+        var reparsed = SDocument.Parse(doc.ToText());
+        Assert.Equal("1", reparsed.Root!.GetChild("a")!.GetValue(0));
+        Assert.Equal(new[] { "3" }, reparsed.Root.GetChild("b")!.Values.ToArray());
+        Assert.Equal("4", reparsed.Root.GetChild("c")!.GetValue(0));
+    }
+
+    /// <summary>
+    /// One form holding more items than the whole first block was sized for. A slice has to be
+    /// contiguous, so the block that takes it must be at least as large as the form itself -- the
+    /// ceiling on block size is not allowed to win that argument. Without that the harvest writes
+    /// past the end of the block.
+    /// </summary>
+    [Fact]
+    public void AFormWithMoreItemsThanTheBlockEstimate_GetsOneContiguousSlice()
+    {
+        // 20 000 items out of 40 007 characters: two characters per item, against the twelve the
+        // first block is sized for.
+        var text = "(root" + string.Concat(Enumerable.Range(0, 20_000).Select(_ => " x")) + ")\n";
+
+        var doc = SDocument.Parse(text);
+
+        Assert.Equal(20_000, doc.Root!.Items.Count);
+        Assert.All(doc.Root.Values, v => Assert.Equal("x", v));
+        Assert.Equal(text, doc.ToText());
+    }
+
+    /// <summary>
+    /// A document dense enough to outgrow its first item block. The block is never resized or
+    /// copied: the forms already harvested keep reading the block that holds them while later ones
+    /// are written into a fresh one, so a growth is exactly where a truncated or relocated slice
+    /// would show up -- and it shows up as a wrong VALUE, not as an exception.
+    /// </summary>
+    [Fact]
+    public void ADocumentThatOutgrowsItsFirstItemBlock_StillReadsAndWritesEveryForm()
+    {
+        var text = "(root" + string.Concat(Enumerable.Range(0, 5_000).Select(i => $"(n{i} {i})")) + ")\n";
+
+        var doc = SDocument.Parse(text);
+
+        Assert.Equal(5_000, doc.Root!.Children.Count);
+        var index = 0;
+        foreach (var child in doc.Root.Children)
+        {
+            Assert.Equal($"n{index}", child.Token);
+            Assert.Equal(index.ToString(), child.GetValue(0));
+            index++;
+        }
+
+        Assert.Equal(text, doc.ToText());
+    }
+
+    /// <summary>
+    /// Density that changes partway through the file, which is the one thing the block estimate
+    /// cannot extrapolate: a long comment header carries very few items per character and the dense
+    /// body that follows carries many, so this parse spans three blocks rather than one.
+    /// </summary>
+    [Fact]
+    public void ADocumentWhoseDensityChangesPartway_SpansSeveralBlocksAndStillRoundTrips()
+    {
+        var header = string.Concat(Enumerable.Repeat("# a comment line, forty-six characters, no forms\n", 200));
+        var text = header + string.Concat(Enumerable.Range(0, 4_000).Select(i => $"(n{i} {i})")) + "\n";
+
+        var doc = SDocument.Parse(text);
+
+        Assert.Equal(4_000, doc.Forms.Count);
+        Assert.Equal(200, doc.Comments.Count());
+        Assert.Equal("3999", doc[3_999].GetValue(0));
+        Assert.Equal(text, doc.ToText());
+    }
+
+    /// <summary>
+    /// One parser instance, two documents. The item block is handed to the tree, so unlike the
+    /// scratch stack it can never be reused -- a reused one would have the second parse writing into
+    /// an array the first document is still reading.
+    /// </summary>
+    [Fact]
+    public void OneParserInstanceParsingTwoDocuments_GivesEachItsOwnItemBlock()
+    {
+        var parser = new SExpressionParser();
+        const string First = "(a (b 1) (c 2))\n";
+        const string Second = "(d (e 3))\n";
+
+        var one = parser.ParseAll(First);
+        var two = parser.ParseAll(Second);
+
+        Assert.Equal(First, one.ToText());
+        Assert.Equal(Second, two.ToText());
+        Assert.Equal("1", one.Root!.GetChild("b")!.GetValue(0));
+        Assert.Equal("3", two.Root!.GetChild("e")!.GetValue(0));
+    }
+
+    /// <summary>
+    /// The same retention trap as the scratch stack, one level up. The item block holds every item in
+    /// the document just built, and through them the whole tree and the source text it was parsed
+    /// from. A parser instance that is KEPT -- which is the only reason to construct one rather than
+    /// call <see cref="SDocument.Parse"/> -- must not keep the last document it parsed alive with it.
+    /// </summary>
+    [Fact]
+    public void AParsedTree_IsNotKeptAliveByTheParsersItemBlock()
+    {
+        var parser = new SExpressionParser();
+        var text = "(root " + string.Join(' ', Enumerable.Range(0, 400).Select(i => $"(n{i} {i})")) + ")";
+        var weak = ParseAndDropWith(parser, text);
+
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
+        Assert.False(weak.IsAlive, "the parser instance is still holding the document it parsed");
+        GC.KeepAlive(parser);
+    }
+
+    /// <summary>Kept out of the test body so no local of the caller's frame can root the tree.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference ParseAndDropWith(SExpressionParser parser, string text) =>
+        new(parser.ParseAll(text).Root!);
 }
