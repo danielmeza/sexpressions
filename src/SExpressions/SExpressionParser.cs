@@ -41,10 +41,18 @@ namespace SExpressions
     /// <summary>
     /// Parser for S-expression text. Instances are cheap but not thread-safe; give each thread its own.
     /// </summary>
+    /// <remarks>
+    /// The two working buffers -- the item scratch stack and the atom cache -- are held per thread
+    /// rather than per instance, so <c>new SExpressionParser().ParseAll(text)</c> in a loop pays for
+    /// them once instead of once per call. The scratch stack is wiped when a parse ends and retains
+    /// nothing; the atom cache deliberately keeps up to 4096 strings of at most 32 characters
+    /// (a few hundred KB at the very worst) alive on the thread, which is what makes it a cache.
+    /// </remarks>
     public sealed class SExpressionParser
     {
         private const int PoolMaxLength = 32;
         private const int CacheSize = 4096;
+        private const int ScratchSize = 512;
 
         /// <summary>Everything that ends a bare atom. Vectorised by <see cref="SearchValues"/>.</summary>
         private static readonly SearchValues<char> Delimiters = SearchValues.Create(" \t\r\n()");
@@ -57,6 +65,18 @@ namespace SExpressions
 
         private readonly SExpressionParserOptions _options;
 
+        // Both working buffers live on the thread, not on the instance. Every entry point this
+        // library documents -- SDocument.Parse, ParseFile, ParseAllFile, Parse -- builds a parser,
+        // parses once and drops it, so an instance-scoped buffer is allocated and thrown away on
+        // every single parse and the amortisation it was written for never happens. MEASURED on a
+        // 142 KB schematic: the two of them are 41 KB of the 960 KB a parse allocated, and
+        // `ResetPool` alone was 7.6% of all allocation in a `dotnet-trace --profile gc-verbose`.
+        [ThreadStatic]
+        private static string[]? t_cache;
+
+        [ThreadStatic]
+        private static SItem[]? t_scratch;
+
         // A fixed-size, collision-tolerant string cache. KiCad text repeats itself hard -- tokens,
         // "yes"/"no", layer names, and even coordinates -- so this removes most atom allocations for
         // one array probe and one comparison, which a Dictionary lookup could not match.
@@ -64,7 +84,7 @@ namespace SExpressions
 
         // One growable stack for the whole parse. A form's items are pushed here and copied into an
         // exactly-sized array when the form closes, so every node owns one array and no slack.
-        private SItem[] _scratch = new SItem[512];
+        private SItem[] _scratch = Array.Empty<SItem>();
         private int _scratchTop;
 
         /// <summary>Creates a parser with default options.</summary>
@@ -108,23 +128,29 @@ namespace SExpressions
         public SDocument ParseAll(string text)
         {
             ArgumentNullException.ThrowIfNull(text);
-            ResetPool();
-
-            var container = new SExpression(string.Empty);
-            container.MarkAsDocumentContainer();
-
-            var source = _options.TrackSource && text.Length <= SItem.MaxSourceLength ? text : null;
-            _scratchTop = 0;
-            var pos = 0;
-            var start = _scratchTop;
-            ReadItems(text, ref pos, 0, topLevel: true);
-            if (pos < text.Length)
+            AcquireBuffers();
+            try
             {
-                throw new SExpressionFormatException("Unbalanced ')'", text, pos);
-            }
+                var container = new SExpression(string.Empty);
+                container.MarkAsDocumentContainer();
 
-            container.SetParsed(Harvest(start, container), source, 0, text.Length);
-            return new SDocument(container);
+                var source = _options.TrackSource && text.Length <= SItem.MaxSourceLength ? text : null;
+                _scratchTop = 0;
+                var pos = 0;
+                var start = _scratchTop;
+                ReadItems(text, ref pos, 0, topLevel: true);
+                if (pos < text.Length)
+                {
+                    throw new SExpressionFormatException("Unbalanced ')'", text, pos);
+                }
+
+                container.SetParsed(Harvest(start, container), source, 0, text.Length);
+                return new SDocument(container);
+            }
+            finally
+            {
+                ReleaseBuffers();
+            }
         }
 
         /// <summary>Parses every top-level form in a file.</summary>
@@ -356,17 +382,49 @@ namespace SExpressions
 
         // ----------------------------------------------------------------------------- string pool
 
-        private void ResetPool()
+        /// <summary>
+        /// Takes this thread's working buffers for the duration of one parse.
+        /// </summary>
+        /// <remarks>
+        /// The scratch stack is <em>taken</em> -- the thread-static slot is nulled -- so a reentrant
+        /// parse on the same thread gets its own buffer instead of corrupting this one's stack.
+        /// The atom cache is not taken: it is content-addressed, so sharing it with a nested parse
+        /// can only produce more hits, never a wrong answer.
+        /// </remarks>
+        private void AcquireBuffers()
         {
-            if (!_options.PoolStrings)
-            {
-                _cache = null;
-                return;
-            }
+            _scratch = t_scratch ?? new SItem[ScratchSize];
+            t_scratch = null;
 
-            // Kept between parses on the same instance: a stale entry is still a valid string, and
-            // the comparison below is what decides a hit, so there is nothing to invalidate.
-            _cache ??= new string[CacheSize];
+            // Entries survive between parses: a stale entry is still a valid string, and the
+            // comparison in Intern is what decides a hit, so there is nothing to invalidate.
+            _cache = _options.PoolStrings ? t_cache ??= new string[CacheSize] : null;
+        }
+
+        /// <summary>
+        /// Returns the scratch stack to the thread, wiped.
+        /// </summary>
+        /// <remarks>
+        /// MEASURED TRAP, and the reason this clears the <em>whole</em> array rather than the part
+        /// the parse used: every <see cref="SItem"/> left behind holds a reference to the document
+        /// just built, and through it the entire tree and the source text it was parsed from. A
+        /// thread that parses one large file and then goes idle would keep it all alive. Clearing
+        /// only <c>[0, _scratchTop)</c> would wipe nothing at all -- by the time the parse finishes,
+        /// <c>_scratchTop</c> is back to zero and the region that retains is the one above it.
+        /// The parser tests cover this with a weak reference.
+        /// </remarks>
+        private void ReleaseBuffers()
+        {
+            var scratch = _scratch;
+            Array.Clear(scratch);
+            _scratch = Array.Empty<SItem>();
+            _scratchTop = 0;
+
+            // Keep whichever buffer is larger: Push may have grown this one past the thread's.
+            if (t_scratch is null || t_scratch.Length < scratch.Length)
+            {
+                t_scratch = scratch;
+            }
         }
 
         private string Intern(ReadOnlySpan<char> span)

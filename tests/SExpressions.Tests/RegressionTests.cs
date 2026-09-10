@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace SExpressions.Tests;
@@ -261,5 +262,79 @@ public class RegressionTests
         document[1].CreateChild("y").AddValue("2");
 
         Assert.Equal("(one 1)\n\n(two\n\t(x 1)\n\t(y 2)\n)\n", document.ToText());
+    }
+
+    // ---------------------------------------------------------------- reused parser buffers
+
+    /// <summary>
+    /// The parser's item scratch stack is reused across parses on a thread, so it is left holding
+    /// <see cref="SItem"/>s that point at the tree it just built. Unless it is wiped when the parse
+    /// ends, one parse of a large file keeps that whole tree -- and the source text it came from --
+    /// alive for as long as the thread lives.
+    /// </summary>
+    [Fact]
+    public void AParsedTree_IsNotKeptAliveByTheParsersScratchBuffer()
+    {
+        var text = "(root " + string.Join(' ', Enumerable.Range(0, 400).Select(i => $"(n{i} {i})")) + ")";
+        var weak = ParseAndDrop(text);
+
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
+        Assert.False(weak.IsAlive, "the parser is still holding the document it parsed");
+    }
+
+    /// <summary>Kept out of the test body so no local of the caller's frame can root the tree.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference ParseAndDrop(string text) => new(SDocument.Parse(text).Root!);
+
+    /// <summary>
+    /// Two documents parsed in a row on one thread share the parser's atom cache and scratch stack.
+    /// Nothing of the first may reach the second.
+    /// </summary>
+    [Fact]
+    public void ParsingTwoDocumentsInARow_LeaksNothingBetweenThem()
+    {
+        const string First = "(a (b \"shared\" 1) (c 2))\n";
+        const string Second = "(a (b \"shared\" 9) (d 3))\n";
+
+        var one = SDocument.Parse(First);
+        var two = SDocument.Parse(Second);
+
+        Assert.Equal(First, one.ToText());
+        Assert.Equal(Second, two.ToText());
+        Assert.Equal("1", one.Root!.GetChild("b")!.Values[1]);
+        Assert.Equal("9", two.Root!.GetChild("b")!.Values[1]);
+        Assert.Null(one.Root.GetChild("d"));
+        Assert.Null(two.Root.GetChild("c"));
+    }
+
+    /// <summary>
+    /// The atom cache hands the same <see cref="string"/> instance to every occurrence of a repeated
+    /// atom, across documents as well as within one. That is the point of it -- but the values must
+    /// still compare equal to freshly built strings, never merely reference-equal.
+    /// </summary>
+    [Fact]
+    public void PooledAtoms_AreValueEqualToUnpooledOnes()
+    {
+        const string Text = "(root (x \"layer\") (y \"layer\") (z 1.27))\n";
+
+        var pooled = new SExpressionParser().ParseAll(Text);
+        var unpooled = new SExpressionParser(new SExpressionParserOptions { PoolStrings = false }).ParseAll(Text);
+
+        Assert.Equal(unpooled.ToText(), pooled.ToText());
+        Assert.Equal(unpooled.Root!.GetChild("x")!.Values[0], pooled.Root!.GetChild("x")!.Values[0]);
+        Assert.Same(pooled.Root.GetChild("x")!.Values[0], pooled.Root.GetChild("y")!.Values[0]);
+    }
+
+    /// <summary>A failed parse must still give the thread its scratch stack back, wiped.</summary>
+    [Fact]
+    public void AFailedParse_StillLeavesTheNextParseCorrect()
+    {
+        Assert.Throws<SExpressionFormatException>(() => SDocument.Parse("(a (b 1)"));
+
+        const string Good = "(a (b 1))\n";
+        Assert.Equal(Good, SDocument.Parse(Good).ToText());
     }
 }
