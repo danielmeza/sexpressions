@@ -87,6 +87,66 @@ public class ReaderTests
         Assert.Equal(fromTree, fromReader);
     }
 
+    /// <summary>
+    /// The two sides of the reader-versus-tree benchmark must extract the SAME records, or the ratio
+    /// it reports is a comparison of two different workloads. This runs both halves of it over the
+    /// corpus and asserts they agree.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(CorpusFiles))]
+    public void Reader_AndTree_ExtractTheSameRecords(string relative)
+    {
+        if (Corpus.Missing)
+        {
+            return;
+        }
+
+        var text = Corpus.Read(relative);
+        SDocument document;
+        try
+        {
+            document = SDocument.Parse(text);
+        }
+        catch (SExpressionFormatException)
+        {
+            return;
+        }
+
+        var fromTree = document
+            .SelectMany(form => form.Descendants("property"))
+            .Select(p => (Name: p.GetValue(0) ?? string.Empty, Value: p.GetValue(1) ?? string.Empty))
+            .ToList();
+
+        var fromReader = new List<(string Name, string Value)>();
+        var reader = new SExpressionReader(text);
+        while (reader.Read())
+        {
+            if (reader.TokenType != SExpressionTokenType.StartForm || !reader.ValueEquals("property"))
+            {
+                continue;
+            }
+
+            var name = reader.Read() && reader.TokenType == SExpressionTokenType.Atom ? reader.GetString() : string.Empty;
+            var value = reader.Read() && reader.TokenType == SExpressionTokenType.Atom ? reader.GetString() : string.Empty;
+            fromReader.Add((name, value));
+        }
+
+        Assert.Equal(fromTree, fromReader);
+
+        var symbolsFromTree = document.Sum(form => form.Descendants("symbol").Count());
+        var symbolsFromReader = 0;
+        var counter = new SExpressionReader(text);
+        while (counter.Read())
+        {
+            if (counter.TokenType == SExpressionTokenType.StartForm && counter.ValueEquals("symbol"))
+            {
+                symbolsFromReader++;
+            }
+        }
+
+        Assert.Equal(symbolsFromTree, symbolsFromReader);
+    }
+
     public static IEnumerable<object[]> CorpusFiles() => Corpus.All().Select(f => new object[] { f });
 
     private static void Flatten(SItemList items, List<string> into)

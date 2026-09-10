@@ -88,3 +88,57 @@ the very worst, and it is per thread rather than per process: the async entry po
 thread, so a long-running host can accumulate one cache per thread that has ever completed a parse.
 `SExpressionParser.ClearThreadBuffers()` gives the calling thread's buffers back; parsing after it is
 correct and simply pays to rebuild them.
+
+## Reading without a tree (`SExpressionReader`)
+
+`SExpressionReader` is a `ref struct` over `ReadOnlySpan<char>` that yields tokens without
+materialising anything — the `Utf8JsonReader` pattern. It is an **additional** API, not a
+replacement: the tree is what generators mutate and what the byte-identical write is built on. Use
+the reader when a document is read once and thrown away, which is what an audit or an inspection
+does.
+
+```csharp
+var reader = new SExpressionReader(text);
+while (reader.Read())
+{
+    if (reader.TokenType == SExpressionTokenType.StartForm && reader.ValueEquals("property"))
+    {
+        reader.Read();                        // the property name
+        var name = reader.GetString();
+        reader.Read();                        // its value
+        var value = reader.GetString();
+    }
+}
+```
+
+| Member | What it does |
+|---|---|
+| `Read()` | Advances to the next token. False at the end of the input. |
+| `TokenType` | `StartForm`, `EndForm`, `Atom` or `Comment`. |
+| `Depth` | 1 for a top-level form's `StartForm` and its matching `EndForm`. |
+| `ValueSpan` | The form's token, the atom's content without quotes, or the comment without its prefix — a slice of the source, **not** unescaped. |
+| `ValueIsEscaped` | True when `ValueSpan` still holds a backslash escape `GetString` would decode. |
+| `ValueEquals(span)` | Compares through escapes. Allocates nothing. |
+| `GetString()` | Materialises the value, decoding escapes. **The one call here that allocates.** |
+| `TryGetValue<T>(out T)` | Parses the value in the invariant culture; `bool` reads `yes`/`no`. |
+| `SkipForm()` | Walks past the current form's whole subtree, leaving the reader on its `EndForm`. |
+| `TryReadChild(token)` | Advances to the next direct child form with that token, skipping the rest. |
+
+### What "zero allocation" means here
+
+**No allocation proportional to the input, not literally none.** The reader allocates nothing at all
+and every token it reports is a slice of the caller's span; what the caller keeps is the caller's
+cost. Measured over one pass of 19 real schematics (1.59 MB):
+
+| Workload                                  |   tree |    reader |
+|-------------------------------------------|-------:|----------:|
+| Count every `symbol` form (keeps nothing)  | 14.78 MB | **0 B**  |
+| Extract every `property` as a record       | 15.04 MB | 676 KB   |
+
+The second row is the floor: those 676 KB are the strings the caller asked for. `MessagePackReader`
+has exactly the same ceiling — it allocates its output objects too. Use `ValueEquals` and
+`TryGetValue<T>` where a value is only being tested or parsed, and `GetString()` only for what is
+kept.
+
+The reader does not intern. A 2-way atom cache was built, measured and rejected in PR #17 (909 → 723
+strings per parse for 3% more time), and there is no tree here to amortise one over.
