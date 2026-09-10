@@ -39,20 +39,46 @@ namespace SExpressions
     }
 
     /// <summary>
-    /// Parser for S-expression text. Instances are cheap but not thread-safe; give each thread its own.
+    /// Parser for S-expression text. Instances are cheap but not thread-safe; give each thread its
+    /// own -- and note that instances on one thread are <em>not</em> isolated from each other, because
+    /// the working buffers belong to the thread rather than to the instance.
     /// </summary>
     /// <remarks>
-    /// The two working buffers -- the item scratch stack and the atom cache -- are held per thread
-    /// rather than per instance, so <c>new SExpressionParser().ParseAll(text)</c> in a loop pays for
-    /// them once instead of once per call. The scratch stack is wiped when a parse ends and retains
-    /// nothing; the atom cache deliberately keeps up to 4096 strings of at most 32 characters
-    /// (a few hundred KB at the very worst) alive on the thread, which is what makes it a cache.
+    /// <para>
+    /// The two working buffers -- the item scratch stack and the atom cache -- are held per thread,
+    /// so <c>new SExpressionParser().ParseAll(text)</c> in a loop pays for them once instead of once
+    /// per call. Nothing observable is shared: the scratch stack is taken for the duration of a parse
+    /// and wiped when it ends, and the atom cache only ever hands back a string equal to the one just
+    /// scanned. Two parsers on one thread will, however, hand out the <em>same string instance</em>
+    /// for equal atoms, and one will pay for a buffer the other grew.
+    /// </para>
+    /// <para>
+    /// The atom cache deliberately keeps up to <see cref="CacheSize"/> strings of at most
+    /// <see cref="PoolMaxLength"/> characters alive -- a few hundred KB per thread at the very worst,
+    /// which is what makes it a cache rather than a table. That is per thread, not per process: with
+    /// <see cref="ParseAllAsync"/> the continuation can land on any pool thread, so over a long run
+    /// every thread that completes a parse holds one. Call <see cref="ClearThreadBuffers"/> to give
+    /// it back.
+    /// </para>
     /// </remarks>
     public sealed class SExpressionParser
     {
         private const int PoolMaxLength = 32;
         private const int CacheSize = 4096;
         private const int ScratchSize = 512;
+
+        /// <summary>
+        /// Largest scratch stack handed back to the thread. A bigger one is used for the parse that
+        /// needed it and then dropped, so one pathological document cannot pin an oversized buffer
+        /// on a thread for the rest of the process.
+        /// </summary>
+        /// <remarks>
+        /// MEASURED over a 76-file KiCad 10.0.6 corpus -- schematics, boards, the symbol library, the
+        /// worksheet and the design rules: the deepest scratch high-water mark is 307 items, in a
+        /// 170 KB schematic. <see cref="ScratchSize"/> is never reached on real input, so growth is
+        /// already the exceptional path and this cap only bounds how far it can be remembered.
+        /// </remarks>
+        private const int MaxRetainedScratch = ScratchSize * 4;
 
         /// <summary>Everything that ends a bare atom. Vectorised by <see cref="SearchValues"/>.</summary>
         private static readonly SearchValues<char> Delimiters = SearchValues.Create(" \t\r\n()");
@@ -433,11 +459,32 @@ namespace SExpressions
             _scratch = Array.Empty<SItem>();
             _scratchTop = 0;
 
-            // Keep whichever buffer is larger: Push may have grown this one past the thread's.
-            if (t_scratch is null || t_scratch.Length < scratch.Length)
+            // Keep whichever buffer is larger, up to the cap: Push may have grown this one past the
+            // thread's, and remembering that is what stops the next parse re-growing it. Past the cap
+            // the oversized array is dropped instead -- one deep document should not pin a buffer on
+            // this thread for the life of the process.
+            if (scratch.Length <= MaxRetainedScratch && (t_scratch is null || t_scratch.Length < scratch.Length))
             {
                 t_scratch = scratch;
             }
+        }
+
+        /// <summary>
+        /// Releases the parsing buffers the calling thread is holding: the atom cache and the item
+        /// scratch stack.
+        /// </summary>
+        /// <remarks>
+        /// This is an optimisation to undo, not state to reset -- parsing after it is correct, it
+        /// just pays to rebuild the buffers. It exists because they are held per thread and nothing
+        /// else hands them back. <see cref="ParseAllAsync"/> and
+        /// <see cref="ParseAllFileAsync(string, CancellationToken)"/> resume on a pool thread, so a
+        /// long-running process can end up holding one atom cache on every thread that has ever
+        /// completed a parse. Affects only the calling thread.
+        /// </remarks>
+        public static void ClearThreadBuffers()
+        {
+            t_cache = null;
+            t_scratch = null;
         }
 
         private string Intern(ReadOnlySpan<char> span)

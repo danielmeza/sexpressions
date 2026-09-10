@@ -337,4 +337,44 @@ public class RegressionTests
         const string Good = "(a (b 1))\n";
         Assert.Equal(Good, SDocument.Parse(Good).ToText());
     }
+
+    /// <summary>
+    /// The buffers are per thread and the async entry points resume on a pool thread, so a host
+    /// needs a way to give them back. Releasing them must cost correctness nothing.
+    /// </summary>
+    [Fact]
+    public void ClearThreadBuffers_LeavesParsingCorrect()
+    {
+        const string Text = "(a (b \"x\" 1) (c 2))\n";
+
+        SExpressionParser.ClearThreadBuffers();      // before this thread has parsed anything
+        var cold = SDocument.Parse(Text);
+        SExpressionParser.ClearThreadBuffers();      // between parses
+        var warm = SDocument.Parse(Text);
+        SExpressionParser.ClearThreadBuffers();
+        SExpressionParser.ClearThreadBuffers();      // twice in a row
+
+        Assert.Equal(Text, cold.ToText());
+        Assert.Equal(Text, warm.ToText());
+        Assert.Equal(Text, SDocument.Parse(Text).ToText());
+    }
+
+    /// <summary>
+    /// A document deep enough to grow the scratch stack past the retention cap must still parse, and
+    /// must not leave the oversized buffer pinned on the thread. The cap is not observable from here,
+    /// so this asserts the part that is: the parse is correct and the next one is unaffected.
+    /// </summary>
+    [Fact]
+    public void ADocumentThatOutgrowsTheScratchCap_ParsesAndDoesNotDisturbTheNextParse()
+    {
+        // 4096 items in one form: past ScratchSize (512) and past MaxRetainedScratch (2048).
+        var wide = "(root " + string.Join(' ', Enumerable.Range(0, 4096).Select(i => $"(n{i} {i})")) + ")";
+
+        var big = SDocument.Parse(wide);
+        Assert.Equal(4096, big.Root!.Children.Count);
+        Assert.Equal(wide, big.ToText());
+
+        const string Small = "(a (b 1))\n";
+        Assert.Equal(Small, SDocument.Parse(Small).ToText());
+    }
 }
