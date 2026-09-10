@@ -4,7 +4,7 @@ How the round-trip guarantee and the throughput numbers were measured.
 
 ## Evidence
 
-- **243 / 243 tests pass** (`dotnet test SExpressions.slnx -c Release`, ~62 s with the corpus).
+- **245 / 245 tests pass** (`dotnet test SExpressions.slnx -c Release`, ~62 s with the corpus).
 - **Byte-identical round trip over 52 real KiCad 10.0.6 files — 1,968,451 bytes**: schematics,
   boards, a symbol library, a worksheet and design rules. Asserted, not claimed.
 - Boards and schematics are re-opened with `kicad-cli` after a *canonical* round trip and their
