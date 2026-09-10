@@ -147,7 +147,30 @@ public class ReaderTests
         Assert.Equal(symbolsFromTree, symbolsFromReader);
     }
 
-    public static IEnumerable<object[]> CorpusFiles() => Corpus.All().Select(f => new object[] { f });
+    /// <summary>
+    /// Every corpus file, with a placeholder row when the corpus is absent.
+    /// </summary>
+    /// <remarks>
+    /// MEASURED, by running the suite against a corpus path that does not exist: a theory that yields
+    /// NO cases fails with "No data found" rather than skipping, so a corpus-less run -- which is what
+    /// CI does -- turns these into two red tests. One placeholder row, which the body returns on,
+    /// is how <c>FidelityTests.AllFiles</c> already handles it.
+    /// </remarks>
+    public static TheoryData<string> CorpusFiles()
+    {
+        var data = new TheoryData<string>();
+        foreach (var f in Corpus.All())
+        {
+            data.Add(f);
+        }
+
+        if (data.Count == 0)
+        {
+            data.Add("<no corpus>");
+        }
+
+        return data;
+    }
 
     private static void Flatten(SItemList items, List<string> into)
     {
