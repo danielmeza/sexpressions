@@ -493,10 +493,18 @@ namespace SExpressions
         }
 
         /// <summary>
-        /// Ceiling on one item block, so a wrong extrapolation cannot ask for an absurd array. A
-        /// document needing more than this simply gets more blocks.
+        /// Ceiling on one item block. A document needing more than this simply gets more blocks.
         /// </summary>
-        private const int MaxBlock = 1 << 24;
+        /// <remarks>
+        /// MEASURED, and the reason this is 4 096 rather than "as big as the document": the large
+        /// object heap starts at 85 000 bytes, an <see cref="SItem"/> is 16, and one block per
+        /// document put a 194 KB array on the LOH on every parse of a 142 KB schematic. That is a
+        /// Gen2 collection every seventeen parses -- 58.6 per 1 000 operations against zero before --
+        /// and it cost 40% of the parse time while the allocation figure went DOWN. 4 096 items is
+        /// 65 560 bytes with the array header, comfortably inside the small object heap, and it costs
+        /// three extra array headers on that schematic.
+        /// </remarks>
+        private const int MaxBlock = 4096;
 
         private static void SkipWhitespace(ReadOnlySpan<char> s, ref int pos)
         {
