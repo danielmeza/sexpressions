@@ -5,11 +5,10 @@ using System.Text;
 namespace SExpressions
 {
     /// <summary>
-    /// The scanning rules the tree parser and the streaming reader share.
+    /// The scanning rules <see cref="SExpressionParser"/> and <see cref="SExpressionReader"/> share.
     /// </summary>
     /// <remarks>
-    /// One place on purpose. A streaming reader has to split a document exactly the way
-    /// <see cref="SExpressionParser"/> does, or a
+    /// One place on purpose. The reader has to split a document exactly the way the parser does, or a
     /// consumer that inspects a file with one and edits it with the other is looking at two different
     /// documents -- and the difference would show up as a byte that moved, which is the one thing this
     /// library promises will not happen. The <see cref="SearchValues{T}"/> tables are also the
