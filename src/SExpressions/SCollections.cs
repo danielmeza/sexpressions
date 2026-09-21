@@ -188,10 +188,19 @@ namespace SExpressions
             }
         }
 
-        /// <inheritdoc />
+        /// <summary>Inserts an atom at <paramref name="index"/> among the atoms.</summary>
+        /// <param name="index">
+        /// From 0 to <see cref="Count"/>. <see cref="Count"/> puts the atom right after the last
+        /// atom, as <see cref="Add(string)"/> does.
+        /// </param>
+        /// <param name="item">The atom text.</param>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// <paramref name="index"/> is negative or greater than <see cref="Count"/>.
+        /// </exception>
         public void Insert(int index, string item)
         {
             ArgumentOutOfRangeException.ThrowIfNegative(index);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(index, Count);
             var itemIndex = ItemIndexOf(index);
             if (itemIndex < 0)
             {
@@ -398,9 +407,13 @@ namespace SExpressions
         /// wherever it was.
         /// </summary>
         /// <param name="index">
-        /// A child index. Past the last child, the form goes after every item the form holds.
+        /// From 0 to <see cref="Count"/>. <see cref="Count"/> puts the form after every item the form
+        /// holds.
         /// </param>
         /// <param name="item">The form to insert.</param>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// <paramref name="index"/> is negative or greater than <see cref="Count"/>.
+        /// </exception>
         /// <remarks>
         /// <para>
         /// A form belongs to one parent at a time, so one that another form holds, in this document

@@ -104,4 +104,62 @@ public class CollectionSafetyTests
 
         Assert.Equal("(at 0 0   0)\n", document.ToText());
     }
+
+    // --------------------------------------------------- #28: an out-of-range Insert throws
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(4)]
+    [InlineData(99)]
+    public void ChildrenInsert_OutsideZeroToCount_Throws_AndChangesNothing(int index)
+    {
+        const string Source = "(root\n\t(a 1)\n\t(b 2)\n\t(c 3)\n)\n";
+        var document = SDocument.Parse(Source);
+        var children = document.Root!.Children;
+        var own = children[0];
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => children.Insert(index, new SExpression("n")));
+        Assert.Throws<ArgumentOutOfRangeException>(() => children.Insert(index, own));
+
+        Assert.False(document.IsModified);
+        Assert.Equal(Source, document.ToText());
+    }
+
+    [Fact]
+    public void ChildrenInsert_AtCount_StillAppends()
+    {
+        var document = SDocument.Parse("(root\n\t(a 1)\n\t(b 2)\n)\n");
+        var children = document.Root!.Children;
+
+        children.Insert(children.Count, new SExpression("n"));
+
+        Assert.Equal("(root\n\t(a 1)\n\t(b 2)\n\t(n)\n)\n", document.ToText());
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(3)]
+    [InlineData(99)]
+    public void ValuesInsert_OutsideZeroToCount_Throws_AndChangesNothing(int index)
+    {
+        const string Source = "(at 1 2 (x))\n";
+        var document = SDocument.Parse(Source);
+        var values = document.Root!.Values;
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => values.Insert(index, "9"));
+
+        Assert.False(document.IsModified);
+        Assert.Equal(Source, document.ToText());
+    }
+
+    [Fact]
+    public void ValuesInsert_AtCount_StillAppendsAfterTheLastAtom()
+    {
+        var document = SDocument.Parse("(at 1 2 (x))\n");
+        var values = document.Root!.Values;
+
+        values.Insert(values.Count, "9");
+
+        Assert.Equal("(at 1 2 9 (x))\n", document.ToText());
+    }
 }

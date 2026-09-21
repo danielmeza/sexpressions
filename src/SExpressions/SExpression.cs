@@ -861,33 +861,38 @@ namespace SExpressions
         /// Inserts a child form among this form's children: the owner's half of
         /// <see cref="SChildCollection.Insert"/>.
         /// </summary>
-        /// <param name="childIndex">
-        /// A position among the child forms. Anything past the last child, and (as before) anything
-        /// negative, means after every item this form holds.
+        /// <param name="index">
+        /// A position among the child forms, from 0 to their count. The count means after every item
+        /// this form holds.
         /// </param>
         /// <param name="child">The form to insert.</param>
         /// <remarks>
-        /// A child this form already holds is moved. <paramref name="childIndex"/> is the child
-        /// index it ends up at, read among the children without it, and when that is the index it
-        /// already has, nothing changes. Otherwise it lands exactly where a new form inserted at
-        /// <paramref name="childIndex"/> into that list would: just in front of the child that will
-        /// follow it, or after every item when it becomes the last child.
+        /// A child this form already holds is moved. <paramref name="index"/> is the child index it
+        /// ends up at, read among the children without it, and when that is the index it already
+        /// has, nothing changes. Otherwise it lands exactly where a new form inserted at
+        /// <paramref name="index"/> into that list would: just in front of the child that will follow
+        /// it, or after every item when it becomes the last child. <paramref name="index"/> is checked
+        /// against the children as the caller sees them, the same range for either kind of form.
         /// </remarks>
-        internal void InsertChild(int childIndex, SExpression child)
+        internal void InsertChild(int index, SExpression child)
         {
             ArgumentNullException.ThrowIfNull(child);
+            var count = CountOf(SItemKind.Expression);
+            ArgumentOutOfRangeException.ThrowIfNegative(index);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(index, count);
+
             var from = ReferenceEquals(child._parent, this) ? ItemIndexOf(child) : -1;
             if (from < 0)
             {
-                var at = ItemIndexOfChild(childIndex, skip: null);
-                InsertItem(at < 0 ? ItemCount : at, SItem.CreateExpression(child));
+                var at = index < count ? ItemIndexOfChild(index, skip: null) : ItemCount;
+                InsertItem(at, SItem.CreateExpression(child));
                 return;
             }
 
             // Every position below is read in the list without the child, which is also the list
             // MoveItem's destination index is read in.
-            var others = CountOf(SItemKind.Expression) - 1;
-            var target = childIndex >= 0 && childIndex < others ? childIndex : others;
+            var others = count - 1;
+            var target = Math.Min(index, others);
             if (target == ChildIndexAt(from))
             {
                 return;
