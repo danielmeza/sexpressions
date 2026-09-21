@@ -800,6 +800,13 @@ namespace SExpressions
         /// check ran first and <see cref="Attach"/> then took the child out of this same list, so an
         /// append was one past the end by the time the copy ran.
         /// </para>
+        /// <para>
+        /// The item is stored without the slot it may carry from a parse: an inserted item is never
+        /// where it was parsed, and its slot is an offset into text that is not, or no longer, the
+        /// text around it. Kept, it made the writer copy this form's source at those offsets -- an
+        /// atom from another document came out as whatever this one held there -- or, when it did
+        /// not fall in order, re-lay the whole form out.
+        /// </para>
         /// </remarks>
         internal void InsertItem(int index, SItem item)
         {
@@ -817,6 +824,7 @@ namespace SExpressions
             }
 
             Attach(item);
+            item = item.WithoutSlot();
 
             var current = ItemsSpan;
             var next = new SItem[ItemCount + 1];
@@ -923,8 +931,10 @@ namespace SExpressions
 
             // Written straight into the block: the slot belongs to this form and to no other, so a
             // replace needs no copy out of it. Keep the old item's slot so the writer can still
-            // splice the whitespace around it and change nothing but this one atom.
-            _items[_offset + index] = old.IsFromSource ? item.InSlotOf(old) : item;
+            // splice the whitespace around it and change nothing but this one atom. The new item's
+            // own slot, if a parse gave it one, is never kept: it points into other text (see
+            // InsertItem).
+            _items[_offset + index] = old.IsFromSource ? item.InSlotOf(old) : item.WithoutSlot();
             MarkDirty();
         }
 

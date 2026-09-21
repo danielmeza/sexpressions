@@ -124,6 +124,18 @@ namespace SExpressions
         internal static SItem ParsedExpression(SExpression expression, int start, int length) =>
             new(SItemKind.Expression, expression, SQuoteStyle.Auto, start, length);
 
+        /// <summary>
+        /// This item with no slot in any source: the writer then renders its text and synthesises the
+        /// separator in front of it, as for an item made with <see cref="CreateAtom"/>.
+        /// </summary>
+        /// <remarks>
+        /// A slot is an offset into the text the item was parsed from, and it only means something
+        /// where the item was parsed. The writer reads a slotted item's bytes out of the source of
+        /// the form it is in, so a slot carried into another form -- above all into another
+        /// document -- makes it copy whatever that text holds at those offsets.
+        /// </remarks>
+        internal SItem WithoutSlot() => _start < 0 && !RawValid ? this : new(Kind, _payload, QuoteStyle, -1, 0, false);
+
         /// <summary>Keeps this item's slot in the source -- so the writer can still splice the whitespace around it -- but marks its text as replaced.</summary>
         internal SItem InSlotOf(in SItem original) =>
             new(Kind, _payload, QuoteStyle, original._start, original.SourceLength, false);

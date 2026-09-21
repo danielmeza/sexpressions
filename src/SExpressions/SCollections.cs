@@ -77,6 +77,11 @@ namespace SExpressions
         /// front of it goes with it, the separator where it lands is copied from its new neighbours,
         /// and its own text is untouched.
         /// </para>
+        /// <para>
+        /// An item taken from a parse -- this document's or another's -- is written from what it
+        /// holds, not from where it was parsed: its atom or comment text, and the quoting it arrived
+        /// with, behind a separator copied from its new neighbours.
+        /// </para>
         /// </remarks>
         public void Insert(int index, SItem item) => Owner.InsertItem(index, item);
 
