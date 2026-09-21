@@ -604,9 +604,15 @@ namespace SExpressions
         }
 
         /// <summary>
-        /// Adds a child S-expression to this expression.
+        /// Appends a child form after everything this form already holds, moving it out of wherever
+        /// it was.
         /// </summary>
         /// <param name="child">The child expression to add.</param>
+        /// <remarks>
+        /// A form has one parent, so a child of another form, in this document or another, leaves
+        /// that form. A child of this form moves to the end, and if it is already the last item
+        /// nothing changes. Add <see cref="Clone"/> to keep the original where it is.
+        /// </remarks>
         public void AddChild(SExpression child)
         {
             ArgumentNullException.ThrowIfNull(child);
@@ -778,16 +784,38 @@ namespace SExpressions
         /// Inserts an item, copying this form out of any block it was sharing.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// A parsed form's slice sits inside a block whose neighbouring slots belong to other forms,
         /// so growing in place is not an option: the copy into an exactly-sized array this form owns
         /// alone is what makes the insert legal, and it is the same copy this did before slices
         /// existed. From here on the form is detached from the block -- it keeps no claim on it, and
         /// the block keeps none on the form.
+        /// </para>
+        /// <para>
+        /// A child form this one already holds is moved, not inserted a second time.
+        /// <paramref name="index"/> is where it ends up, read in the list without it, as
+        /// <c>ObservableCollection&lt;T&gt;.Move</c> reads its new index; <see cref="ItemCount"/>
+        /// still means the end. <paramref name="index"/> is checked against the list as the caller
+        /// sees it, so it is only out of range where it would be for any other item. Before this, the
+        /// check ran first and <see cref="Attach"/> then took the child out of this same list, so an
+        /// append was one past the end by the time the copy ran.
+        /// </para>
         /// </remarks>
         internal void InsertItem(int index, SItem item)
         {
             ArgumentOutOfRangeException.ThrowIfNegative(index);
             ArgumentOutOfRangeException.ThrowIfGreaterThan(index, ItemCount);
+
+            if (item.Kind == SItemKind.Expression && ReferenceEquals(item.Expression!._parent, this))
+            {
+                var from = ItemIndexOf(item.Expression);
+                if (from >= 0)
+                {
+                    MoveItem(from, Math.Min(index, ItemCount - 1));
+                    return;
+                }
+            }
+
             Attach(item);
 
             var current = ItemsSpan;
@@ -821,12 +849,67 @@ namespace SExpressions
             MarkDirty();
         }
 
+        /// <summary>
+        /// Inserts a child form among this form's children: the owner's half of
+        /// <see cref="SChildCollection.Insert"/>.
+        /// </summary>
+        /// <param name="childIndex">
+        /// A position among the child forms. Anything past the last child, and (as before) anything
+        /// negative, means after every item this form holds.
+        /// </param>
+        /// <param name="child">The form to insert.</param>
+        /// <remarks>
+        /// A child this form already holds is moved. <paramref name="childIndex"/> is the child
+        /// index it ends up at, read among the children without it, and when that is the index it
+        /// already has, nothing changes. Otherwise it lands exactly where a new form inserted at
+        /// <paramref name="childIndex"/> into that list would: just in front of the child that will
+        /// follow it, or after every item when it becomes the last child.
+        /// </remarks>
+        internal void InsertChild(int childIndex, SExpression child)
+        {
+            ArgumentNullException.ThrowIfNull(child);
+            var from = ReferenceEquals(child._parent, this) ? ItemIndexOf(child) : -1;
+            if (from < 0)
+            {
+                var at = ItemIndexOfChild(childIndex, skip: null);
+                InsertItem(at < 0 ? ItemCount : at, SItem.CreateExpression(child));
+                return;
+            }
+
+            // Every position below is read in the list without the child, which is also the list
+            // MoveItem's destination index is read in.
+            var others = CountOf(SItemKind.Expression) - 1;
+            var target = childIndex >= 0 && childIndex < others ? childIndex : others;
+            if (target == ChildIndexAt(from))
+            {
+                return;
+            }
+
+            var to = target < others ? ItemIndexOfChild(target, skip: child) : ItemCount - 1;
+            MoveItem(from, to);
+        }
+
         internal void ReplaceItem(int index, SItem item)
         {
             var old = _items[_offset + index];
             if (old.RawValid && old == item)
             {
                 return;
+            }
+
+            // A child this form already holds, put in place of a different item. Left to the
+            // general path below, Attach would take it out of this same list AFTER index had been
+            // resolved against it, and the write would land one slot off: overwriting the item after
+            // the one being replaced and leaving that one in the list with no parent, or running off
+            // the end.
+            if (item.Kind == SItemKind.Expression && ReferenceEquals(item.Expression!._parent, this))
+            {
+                var from = ItemIndexOf(item.Expression);
+                if (from >= 0 && from != index)
+                {
+                    ReplaceWithOwnChild(index, from, old);
+                    return;
+                }
             }
 
             Detach(old);
@@ -895,15 +978,148 @@ namespace SExpressions
 
         private void DetachChildReference(SExpression child)
         {
+            var i = ItemIndexOf(child);
+            if (i >= 0)
+            {
+                RemoveItemAt(i);
+            }
+        }
+
+        /// <summary>
+        /// Moves one of this form's own child forms from item index <paramref name="from"/> to
+        /// <paramref name="to"/>, which is read in the list without it. Nothing changes when the two
+        /// are equal.
+        /// </summary>
+        /// <remarks>
+        /// The result is what taking the child out of another form and inserting it here gives, byte
+        /// for byte, so a move within one form and a move between two are written the same way. The
+        /// child leaves its slot: the whitespace in front of it where it was goes with it, and the
+        /// writer synthesises the separator it needs where it lands from the neighbours there. Its own
+        /// text, comments inside it included, travels untouched. A comment that sat beside it in this
+        /// form is an item of its own and stays where it was. One copy out of the shared block, not
+        /// the two a remove and an insert would make.
+        /// </remarks>
+        private void MoveItem(int from, int to)
+        {
+            if (from == to)
+            {
+                return;
+            }
+
+            var current = ItemsSpan;
+            var next = new SItem[current.Length];
+            if (from < to)
+            {
+                current[..from].CopyTo(next);
+                current[(from + 1)..(to + 1)].CopyTo(next.AsSpan(from));
+            }
+            else
+            {
+                current[..to].CopyTo(next);
+                current[to..from].CopyTo(next.AsSpan(to + 1));
+            }
+
+            var after = Math.Max(from, to) + 1;
+            current[after..].CopyTo(next.AsSpan(after));
+            next[to] = SItem.CreateExpression(current[from].Expression!);
+            _items = next;
+            _offset = 0;
+
+            Flags |= Flag.ItemsChanged;
+            MarkDirty();
+        }
+
+        /// <summary>
+        /// Puts the child at item index <paramref name="from"/> in place of the item at
+        /// <paramref name="index"/>, which leaves the tree, and closes the gap the child leaves.
+        /// </summary>
+        /// <remarks>
+        /// The item being replaced is the one at <paramref name="index"/> when this is called, and
+        /// the child ends up where that item was: at <paramref name="index"/> - 1 when it came from
+        /// in front of it. The child takes that item's slot, as a child replacing an item from
+        /// anywhere else does, so the separator in front of the replaced item is kept and the one in
+        /// front of the child goes with it.
+        /// </remarks>
+        private void ReplaceWithOwnChild(int index, int from, SItem old)
+        {
+            var current = ItemsSpan;
+            var moved = SItem.CreateExpression(current[from].Expression!);
+            var next = new SItem[current.Length - 1];
+            current[..from].CopyTo(next);
+            current[(from + 1)..].CopyTo(next.AsSpan(from));
+            next[from < index ? index - 1 : index] = old.IsFromSource ? moved.InSlotOf(old) : moved;
+
+            Detach(old);
+            _items = next;
+            _offset = 0;
+            SetItemCount(next.Length);
+
+            Flags |= Flag.ItemsChanged;
+            MarkDirty();
+        }
+
+        /// <summary>The item index of <paramref name="child"/> in this form, or -1.</summary>
+        private int ItemIndexOf(SExpression child)
+        {
             var items = ItemsSpan;
             for (var i = 0; i < items.Length; i++)
             {
                 if (items[i].Kind == SItemKind.Expression && ReferenceEquals(items[i].Expression, child))
                 {
-                    RemoveItemAt(i);
-                    return;
+                    return i;
                 }
             }
+
+            return -1;
+        }
+
+        /// <summary>
+        /// The item index of the child form at <paramref name="childIndex"/>, or -1 when there is
+        /// none. With <paramref name="skip"/>, both indexes are read in the list without that child.
+        /// </summary>
+        internal int ItemIndexOfChild(int childIndex, SExpression? skip)
+        {
+            if (childIndex < 0)
+            {
+                return -1;
+            }
+
+            var seen = 0;
+            var position = 0;
+            foreach (var item in ItemsSpan)
+            {
+                if (item.Kind == SItemKind.Expression)
+                {
+                    if (ReferenceEquals(item.Expression, skip))
+                    {
+                        continue;
+                    }
+
+                    if (seen++ == childIndex)
+                    {
+                        return position;
+                    }
+                }
+
+                position++;
+            }
+
+            return -1;
+        }
+
+        /// <summary>How many child forms sit in front of item index <paramref name="itemIndex"/>.</summary>
+        private int ChildIndexAt(int itemIndex)
+        {
+            var n = 0;
+            foreach (var item in ItemsSpan[..itemIndex])
+            {
+                if (item.Kind == SItemKind.Expression)
+                {
+                    n++;
+                }
+            }
+
+            return n;
         }
 
         private void MarkDirty()
