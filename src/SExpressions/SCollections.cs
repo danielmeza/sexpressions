@@ -35,6 +35,9 @@ namespace SExpressions
         /// <exception cref="ArgumentOutOfRangeException">
         /// <paramref name="index"/> is negative, or not less than <see cref="Count"/>.
         /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Setting it to a form that is this form, or one it is nested in.
+        /// </exception>
         /// <remarks>
         /// Setting a child form that is already an item of this form moves it into the place of the
         /// item at <paramref name="index"/>, which leaves the tree; the list is then one item shorter,
@@ -53,11 +56,20 @@ namespace SExpressions
         /// A child form of this same form moves to the end, and nothing changes if it is already the
         /// last item. See <see cref="Insert"/>.
         /// </remarks>
+        /// <exception cref="InvalidOperationException">
+        /// <paramref name="item"/> holds this form, or a form it is nested in.
+        /// </exception>
         public void Add(SItem item) => Owner.InsertItem(Owner.ItemCount, item);
 
         /// <summary>Inserts an item at <paramref name="index"/>.</summary>
         /// <param name="index">From 0 to <see cref="Count"/>.</param>
         /// <param name="item">The item. A child form moves out of wherever it was.</param>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// <paramref name="index"/> is negative or greater than <see cref="Count"/>.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// <paramref name="item"/> holds this form, or a form it is nested in.
+        /// </exception>
         /// <remarks>
         /// <para>
         /// A child form belongs to one form at a time, so inserting one that another form holds, in
@@ -357,6 +369,9 @@ namespace SExpressions
         /// <c>[b, a]</c>, with <c>a</c> at index 1, and <c>this[0] = c</c> gives <c>[c, b]</c>.
         /// </para>
         /// </remarks>
+        /// <exception cref="InvalidOperationException">
+        /// Setting it to this form, or to a form it is nested in.
+        /// </exception>
         public SExpression this[int index]
         {
             get
@@ -383,6 +398,9 @@ namespace SExpressions
         /// A child of this same form moves to the end, and nothing changes if it is already the last
         /// item. See <see cref="SExpression.AddChild"/>.
         /// </remarks>
+        /// <exception cref="InvalidOperationException">
+        /// <paramref name="item"/> is this form, or a form it is nested in.
+        /// </exception>
         public void Add(SExpression item) => Owner.AddChild(item);
 
         /// <summary>Appends several child forms, in order, each moving out of wherever it was.</summary>
@@ -394,12 +412,25 @@ namespace SExpressions
         /// <c>other.Children.AddRange(node.Children)</c>, would otherwise skip some of them and, over
         /// this form's own children, visit some twice.
         /// </remarks>
+        /// <exception cref="InvalidOperationException">
+        /// One of <paramref name="items"/> is this form, or a form it is nested in. None has moved.
+        /// </exception>
         public void AddRange(IEnumerable<SExpression> items)
         {
             ArgumentNullException.ThrowIfNull(items);
-            foreach (var i in new List<SExpression>(items))
+            var owner = Owner;
+            var forms = new List<SExpression>(items);
+
+            // All of them checked before the first moves, so a refusal leaves everything in place.
+            foreach (var form in forms)
             {
-                Owner.AddChild(i);
+                ArgumentNullException.ThrowIfNull(form, nameof(items));
+                owner.ThrowIfAncestorOrSelf(form);
+            }
+
+            foreach (var form in forms)
+            {
+                owner.AddChild(form);
             }
         }
 
@@ -414,6 +445,9 @@ namespace SExpressions
         /// <param name="item">The form to insert.</param>
         /// <exception cref="ArgumentOutOfRangeException">
         /// <paramref name="index"/> is negative or greater than <see cref="Count"/>.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// <paramref name="item"/> is this form, or a form it is nested in.
         /// </exception>
         /// <remarks>
         /// <para>

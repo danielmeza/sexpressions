@@ -309,4 +309,123 @@ public class CollectionSafetyTests
         Assert.Equal(["a", "b"], first);
         Assert.Equal(["a", "b", "c"], children.Select(c => c.Token));
     }
+
+    // ------------------------------------------------------------------ #30: no parent cycles
+
+    public static TheoryData<string> PlacingEntryPoints() =>
+    [
+        "AddChild", "Children.Add", "Children.AddRange", "Children.Insert", "Children[i] =",
+        "Items.Add", "Items.Insert", "Items[i] =",
+    ];
+
+    [Theory]
+    [MemberData(nameof(PlacingEntryPoints))]
+    public void AddingAFormIntoItsOwnDescendant_Throws_AndChangesNothing(string entryPoint)
+    {
+        // root into a, its child, and root into b, its grandchild. The indexer cases replace the
+        // one child a (or b) holds.
+        const string Source = "(root\n\t(a\n\t\t(b\n\t\t\t(e 1)\n\t\t)\n\t)\n\t(c 2)\n)\n";
+        foreach (var path in new[] { "a", "a/b" })
+        {
+            var document = SDocument.Parse(Source);
+            var root = document.Root!;
+            var destination = root.Find(path)!;
+
+            var error = Assert.Throws<InvalidOperationException>(() => Place(entryPoint, destination, root));
+
+            Assert.Contains("(root)", error.Message, StringComparison.Ordinal);
+            Assert.Same(root, document.Root);
+            Assert.Null(root.Parent);
+            Assert.Same(root, root.Find("a")!.Parent);
+            Assert.False(document.IsModified);
+            Assert.Equal(Source, document.ToText());
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(PlacingEntryPoints))]
+    public void AddingAFormToItself_Throws(string entryPoint)
+    {
+        var x = new SExpression("x");
+        x.AddChild(new SExpression("y"));
+
+        Assert.Throws<InvalidOperationException>(() => Place(entryPoint, x, x));
+
+        Assert.Null(x.Parent);
+        Assert.Equal(["y"], x.Children.Select(c => c.Token));
+        Assert.Equal("(x\n\t(y)\n)\n", x.ToText());
+    }
+
+    [Fact]
+    public void AddRange_WithOneFormThatWouldNestItself_MovesNoneOfThem()
+    {
+        var document = SDocument.Parse("(root\n\t(a\n\t\t(b 1)\n\t)\n\t(c 2)\n)\n");
+        var root = document.Root!;
+        var b = root.Find("a/b")!;
+        var c = root.GetChild("c")!;
+
+        Assert.Throws<InvalidOperationException>(() => b.Children.AddRange([c, root]));
+
+        Assert.Same(root, c.Parent);
+        Assert.Empty(b.Children);
+        Assert.False(document.IsModified);
+    }
+
+    [Fact]
+    public void MovingADescendantUpOrOut_IsStillAllowed()
+    {
+        var document = SDocument.Parse("(root\n\t(a\n\t\t(b\n\t\t\t(d 4)\n\t\t)\n\t)\n)\n");
+        var root = document.Root!;
+        var b = root.Find("a/b")!;
+        var d = b.GetChild("d")!;
+
+        root.AddChild(d);
+        Assert.Same(root, d.Parent);
+
+        document.Add(b);
+        Assert.Null(b.Parent);
+        Assert.Equal(2, document.Count);
+
+        var reparsed = SDocument.Parse(document.ToText());
+        Assert.Equal(["root", "b"], reparsed.Forms.Select(f => f.Token));
+        Assert.Equal(["a", "d"], reparsed.Root!.Children.Select(c => c.Token));
+        Assert.Empty(reparsed.Root.GetChild("a")!.Children);
+    }
+
+    // ------------------------------------------------------------------------------- helpers
+
+    private static void Place(string entryPoint, SExpression destination, SExpression form)
+    {
+        var children = destination.Children;
+        var items = destination.Items;
+        switch (entryPoint)
+        {
+            case "AddChild":
+                destination.AddChild(form);
+                break;
+            case "Children.Add":
+                children.Add(form);
+                break;
+            case "Children.AddRange":
+                children.AddRange([form]);
+                break;
+            case "Children.Insert":
+                children.Insert(0, form);
+                break;
+            case "Children[i] =":
+                children[0] = form;
+                break;
+            case "Items.Add":
+                items.Add(SItem.CreateExpression(form));
+                break;
+            case "Items.Insert":
+                items.Insert(0, SItem.CreateExpression(form));
+                break;
+            case "Items[i] =":
+                items[0] = SItem.CreateExpression(form);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(entryPoint), entryPoint, null);
+        }
+    }
 }

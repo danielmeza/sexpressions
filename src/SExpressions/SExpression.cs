@@ -635,6 +635,9 @@ namespace SExpressions
         /// that form. A child of this form moves to the end, and if it is already the last item
         /// nothing changes. Add <see cref="Clone"/> to keep the original where it is.
         /// </remarks>
+        /// <exception cref="InvalidOperationException">
+        /// <paramref name="child"/> is this form, or a form this one is nested in.
+        /// </exception>
         public void AddChild(SExpression child)
         {
             ArgumentNullException.ThrowIfNull(child);
@@ -834,6 +837,10 @@ namespace SExpressions
         {
             ArgumentOutOfRangeException.ThrowIfNegative(index);
             ArgumentOutOfRangeException.ThrowIfGreaterThan(index, ItemCount);
+            if (item.Kind == SItemKind.Expression)
+            {
+                ThrowIfAncestorOrSelf(item.Expression!);
+            }
 
             if (item.Kind == SItemKind.Expression && ReferenceEquals(item.Expression!._parent, this))
             {
@@ -931,6 +938,10 @@ namespace SExpressions
             // the write below would land in a neighbouring form's item.
             ArgumentOutOfRangeException.ThrowIfNegative(index);
             ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, ItemCount);
+            if (item.Kind == SItemKind.Expression)
+            {
+                ThrowIfAncestorOrSelf(item.Expression!);
+            }
 
             var old = _items[_offset + index];
             if (old.RawValid && old == item)
@@ -1016,6 +1027,30 @@ namespace SExpressions
             if (item.Kind == SItemKind.Expression && ReferenceEquals(item.Expression!._parent, this))
             {
                 item.Expression._parent = null;
+            }
+        }
+
+        /// <summary>
+        /// Refuses <paramref name="form"/> when it is this form or one this form is nested in. Put
+        /// here, it would contain itself: the parent chain becomes a loop, the form leaves its
+        /// document, and every walk of the tree -- <see cref="ToText()"/> first -- recurses until the
+        /// stack overflows, which no caller can catch.
+        /// </summary>
+        /// <param name="form">The form about to be placed in this one.</param>
+        /// <exception cref="InvalidOperationException">It is this form, or one of its ancestors.</exception>
+        /// <remarks>
+        /// Checked before anything moves. One walk up the parent chain: O(depth), and the parser
+        /// already caps the depth of what it builds at <see cref="SExpressionParserOptions.MaxDepth"/>.
+        /// </remarks>
+        internal void ThrowIfAncestorOrSelf(SExpression form)
+        {
+            for (var node = this; node is not null; node = node._parent)
+            {
+                if (ReferenceEquals(node, form))
+                {
+                    throw new InvalidOperationException(
+                        $"({form.Token}) cannot be added to itself or to a form nested inside it.");
+                }
             }
         }
 
