@@ -137,13 +137,26 @@ namespace SExpressions
         /// The loop may add, remove or move items; the walk still visits each item that was there
         /// when it started, once, in order. See <see cref="SExpression"/>.
         /// </remarks>
-        public IEnumerator<SItem> GetEnumerator() => ((IEnumerable<SItem>)Owner.WalkItems).GetEnumerator();
+        public IEnumerator<SItem> GetEnumerator()
+        {
+            var owner = Owner;
+            return Walk(owner.ItemArray, owner.ItemOffset, owner.ItemCount);
+        }
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
         /// <summary>Gets the items as a span, for allocation-free iteration.</summary>
         /// <returns>The span.</returns>
         public ReadOnlySpan<SItem> AsSpan() => Owner.ItemsSpan;
+
+        private static IEnumerator<SItem> Walk(SItem[] items, int start, int count)
+        {
+            var end = start + count;
+            for (var i = start; i < end; i++)
+            {
+                yield return items[i];
+            }
+        }
     }
 
     /// <summary>
@@ -298,17 +311,22 @@ namespace SExpressions
         /// The loop may add or remove atoms, and <c>values.AddRange(values)</c> appends each atom
         /// once. See <see cref="SExpression"/>.
         /// </remarks>
-        public IEnumerator<string> GetEnumerator() => Enumerate(Owner.WalkItems).GetEnumerator();
+        public IEnumerator<string> GetEnumerator()
+        {
+            var owner = Owner;
+            return Walk(owner.ItemArray, owner.ItemOffset, owner.ItemCount);
+        }
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
-        private static IEnumerable<string> Enumerate(ArraySegment<SItem> items)
+        private static IEnumerator<string> Walk(SItem[] items, int start, int count)
         {
-            foreach (var item in items)
+            var end = start + count;
+            for (var i = start; i < end; i++)
             {
-                if (item.Kind == SItemKind.Atom)
+                if (items[i].Kind == SItemKind.Atom)
                 {
-                    yield return item.Text!;
+                    yield return items[i].Text!;
                 }
             }
         }
@@ -547,17 +565,22 @@ namespace SExpressions
         /// The loop may move, remove or add children: <c>foreach (var c in a.Children) b.AddChild(c)</c>
         /// moves every one. See <see cref="SExpression"/>.
         /// </remarks>
-        public IEnumerator<SExpression> GetEnumerator() => Enumerate(Owner.WalkItems).GetEnumerator();
+        public IEnumerator<SExpression> GetEnumerator()
+        {
+            var owner = Owner;
+            return Walk(owner.ItemArray, owner.ItemOffset, owner.ItemCount);
+        }
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
-        private static IEnumerable<SExpression> Enumerate(ArraySegment<SItem> items)
+        private static IEnumerator<SExpression> Walk(SItem[] items, int start, int count)
         {
-            foreach (var item in items)
+            var end = start + count;
+            for (var i = start; i < end; i++)
             {
-                if (item.Kind == SItemKind.Expression)
+                if (items[i].Expression is { } child)
                 {
-                    yield return item.Expression!;
+                    yield return child;
                 }
             }
         }

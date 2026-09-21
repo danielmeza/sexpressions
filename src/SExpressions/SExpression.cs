@@ -163,11 +163,14 @@ namespace SExpressions
         {
             get
             {
-                foreach (var item in WalkItems)
+                // The window the walk starts with, and never re-read: see ItemArray.
+                var items = _items;
+                var end = _offset + ItemCount;
+                for (var i = _offset; i < end; i++)
                 {
-                    if (item.Kind == SItemKind.Comment)
+                    if (items[i].Kind == SItemKind.Comment)
                     {
-                        yield return item.Text ?? string.Empty;
+                        yield return items[i].Text ?? string.Empty;
                     }
                 }
             }
@@ -199,17 +202,22 @@ namespace SExpressions
         internal int ItemCount => _countAndFlags >>> FlagShift;
 
         /// <summary>
-        /// This form's items as they are now, to walk: the array and the window they sit in.
+        /// The array this form's items sit in; they start at <see cref="ItemOffset"/> and run for
+        /// <see cref="ItemCount"/>. Read the three together, once, when a walk starts.
         /// </summary>
         /// <remarks>
-        /// No copy is made, and none is needed. Every insert, removal or move copies the items into a
-        /// new array and leaves the old one alone (see <see cref="InsertItem"/>), so a walk over the
-        /// window it took at its start sees the form as it was then, however the loop changes the
-        /// form. Unlike <see cref="ItemsSpan"/>, it can be held across a <c>yield</c>. The one write
-        /// that lands in place is a replacement (<see cref="ReplaceItem"/>), which a walk that has
-        /// not reached it yet may see.
+        /// That window is the form as it was when the walk started, however the loop then changes the
+        /// form, and it costs no copy: every insert, removal or move copies the items into a new
+        /// array and never writes the old one again (see <see cref="InsertItem"/>). The one write that
+        /// lands in place is a replacement (<see cref="ReplaceItem"/>), which a walk that has not
+        /// reached it yet may see. Unlike <see cref="ItemsSpan"/>, the three can be held across a
+        /// <c>yield</c> -- and as an array and two ints, not a segment and its enumerator, they keep
+        /// every iterator object as small as it was.
         /// </remarks>
-        internal ArraySegment<SItem> WalkItems => new(_items, _offset, ItemCount);
+        internal SItem[] ItemArray => _items;
+
+        /// <summary>Where this form's items start in <see cref="ItemArray"/>.</summary>
+        internal int ItemOffset => _offset;
 
         /// <summary>One item by index, read live.</summary>
         internal SItem ItemAt(int index) => _items[_offset + index];
@@ -302,11 +310,14 @@ namespace SExpressions
         /// </remarks>
         public IEnumerable<SExpression> GetChildren(string token)
         {
-            foreach (var item in WalkItems)
+            var items = _items;
+            var end = _offset + ItemCount;
+            for (var i = _offset; i < end; i++)
             {
-                if (item.Kind == SItemKind.Expression && string.Equals(item.Expression!.Token, token, StringComparison.Ordinal))
+                var child = items[i].Expression;
+                if (child is not null && string.Equals(child.Token, token, StringComparison.Ordinal))
                 {
-                    yield return item.Expression;
+                    yield return child;
                 }
             }
         }
@@ -355,22 +366,49 @@ namespace SExpressions
         /// </remarks>
         public IEnumerable<SExpression> Descendants(string? token = null)
         {
-            foreach (var item in WalkItems)
+            // One iterator for the whole walk, holding the forms above the current one as a stack of
+            // windows, rather than one nested iterator per form: a recursive walk allocated an
+            // iterator for every form it visited, and a window per iterator (see ItemArray) would
+            // have made each of those larger still. The order is the same, depth first, a form before
+            // what it holds, and each form's window is taken when the walk goes into it.
+            Stack<(SItem[] Items, int Next, int End)>? above = null;
+            var items = _items;
+            var i = _offset;
+            var end = _offset + ItemCount;
+            while (true)
             {
-                if (item.Kind != SItemKind.Expression)
+                if (i == end)
+                {
+                    if (above is null || above.Count == 0)
+                    {
+                        yield break;
+                    }
+
+                    (items, i, end) = above.Pop();
+                    continue;
+                }
+
+                var child = items[i++].Expression;
+                if (child is null)
                 {
                     continue;
                 }
 
-                var child = item.Expression!;
                 if (token is null || string.Equals(child.Token, token, StringComparison.Ordinal))
                 {
                     yield return child;
                 }
 
-                foreach (var d in child.Descendants(token))
+                // A form that holds no form -- (at 1 2), (uuid "...") -- has nothing to walk into, and
+                // most forms in a KiCad file are one; skipping them keeps a shallow walk from
+                // allocating the stack at all.
+                if (child.HoldsAForm())
                 {
-                    yield return d;
+                    above ??= new Stack<(SItem[] Items, int Next, int End)>();
+                    above.Push((items, i, end));
+                    items = child._items;
+                    i = child._offset;
+                    end = i + child.ItemCount;
                 }
             }
         }
@@ -761,6 +799,20 @@ namespace SExpressions
         public override string ToString() => $"({_token} {string.Join(" ", Values)})";
 
         // ------------------------------------------------------------------------- item plumbing
+
+        /// <summary>True when at least one of this form's items is a form.</summary>
+        private bool HoldsAForm()
+        {
+            foreach (var item in ItemsSpan)
+            {
+                if (item.Kind == SItemKind.Expression)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
 
         internal SExpression? GetFirstChild()
         {

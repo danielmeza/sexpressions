@@ -6,8 +6,11 @@ namespace SExpressions.Tests;
 /// tree, lose data on save, or never return (#26 to #30).
 /// </summary>
 /// <remarks>
-/// Every test here failed on 0c28600 / 95311b7. None of them calls <c>ToText</c> on a tree that
-/// the old code would have left cyclic: that overflows the stack and takes the test host with it.
+/// Each fix's tests fail on 95311b7, except the few that pin what already held and must stay so:
+/// <c>Insert</c> at <c>Count</c> still appends, <c>Values.Insert(-1)</c> still throws, a descendant
+/// may still move up or out, and <c>Descendants</c> keeps its order. None of them calls
+/// <c>ToText</c> on a tree the old code would have left cyclic: that overflows the stack and takes
+/// the test host with it.
 /// </remarks>
 public class CollectionSafetyTests
 {
@@ -285,6 +288,40 @@ public class CollectionSafetyTests
         }
 
         Assert.Equal(["1", "2", "3"], descendants);
+    }
+
+    [Fact]
+    public void Descendants_VisitsDepthFirst_AFormBeforeWhatItHolds_WithAndWithoutAToken()
+    {
+        // Descendants walks with one iterator and a stack now, not one iterator per form; the
+        // order is pinned against the recursive definition it replaced.
+        var document = SDocument.Parse("(r (a (b (c 1) x (d)) (e)) y (f (g (h (i)))) # z\n (j) (k (l) (m (n))))\n");
+        var root = document.Root!;
+
+        Assert.Equal(Recursive(root, null).Select(f => f.Token), root.Descendants().Select(f => f.Token));
+        Assert.Equal("abcdefghijklmn", string.Concat(root.Descendants().Select(f => f.Token)));
+        foreach (var token in new[] { "a", "d", "i", "n", "none" })
+        {
+            Assert.Equal(Recursive(root, token), root.Descendants(token));
+        }
+
+        Assert.Empty(new SExpression("leaf").Descendants());
+
+        static IEnumerable<SExpression> Recursive(SExpression form, string? token)
+        {
+            foreach (var child in form.Children.ToArray())
+            {
+                if (token is null || child.Token == token)
+                {
+                    yield return child;
+                }
+
+                foreach (var d in Recursive(child, token))
+                {
+                    yield return d;
+                }
+            }
+        }
     }
 
     [Fact]
