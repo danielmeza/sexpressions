@@ -49,16 +49,10 @@ public class ReaderTests
             return;
         }
 
+        // No catch: the corpus files cut short on purpose are not in Corpus.All() (they have their
+        // own test in CorpusTests), so a parse failure here is a regression, not a fixture.
         var text = Corpus.Read(relative);
-        SDocument document;
-        try
-        {
-            document = SDocument.Parse(text);
-        }
-        catch (SExpressionFormatException)
-        {
-            return; // a deliberately unparsable fixture; the reader is not being asked to differ
-        }
+        var document = SDocument.Parse(text);
 
         var fromTree = new List<string>();
         Flatten(document.Items, fromTree);
@@ -102,15 +96,7 @@ public class ReaderTests
         }
 
         var text = Corpus.Read(relative);
-        SDocument document;
-        try
-        {
-            document = SDocument.Parse(text);
-        }
-        catch (SExpressionFormatException)
-        {
-            return;
-        }
+        var document = SDocument.Parse(text);
 
         var fromTree = document
             .SelectMany(form => form.Descendants("property"))

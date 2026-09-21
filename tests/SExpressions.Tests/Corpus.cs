@@ -10,6 +10,22 @@ public static class Corpus
 {
     public static readonly string? Root = FindRoot();
 
+    /// <summary>
+    /// Corpus files cut short on purpose, relative to the root. They exist to test tools that must
+    /// report a file they cannot read, so they are no longer KiCad files and nothing here
+    /// round-trips them; <c>CorpusTests</c> checks instead that the parser and the reader both
+    /// refuse each one.
+    /// </summary>
+    /// <remarks>
+    /// Named, not detected. A file that stops parsing for any other reason is a parser regression
+    /// or a corpus change somebody has to look at, and it must still fail the round-trip tests.
+    /// </remarks>
+    public static readonly IReadOnlyList<string> BrokenOnPurpose =
+    [
+        // Cut off inside its (layers block; see the README beside it.
+        Path.Combine("tests", "design-rules", "audit-fixtures", "footprint", "board-unreadable", "board-unreadable.kicad_pcb"),
+    ];
+
     private static string? FindRoot()
     {
         var env = Environment.GetEnvironmentVariable("ORBION_KICAD_ROOT");
@@ -100,7 +116,11 @@ public static class Corpus
 
             foreach (var f in Directory.GetFiles(full, "*.kicad_pcb", SearchOption.AllDirectories).OrderBy(x => x, StringComparer.Ordinal))
             {
-                yield return Path.GetRelativePath(Root, f);
+                var relative = Path.GetRelativePath(Root, f);
+                if (!BrokenOnPurpose.Contains(relative, StringComparer.Ordinal))
+                {
+                    yield return relative;
+                }
             }
         }
     }
