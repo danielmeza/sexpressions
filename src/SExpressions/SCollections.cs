@@ -32,6 +32,9 @@ namespace SExpressions
 
         /// <summary>Gets or sets the item at <paramref name="index"/>.</summary>
         /// <param name="index">The item index.</param>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// <paramref name="index"/> is negative, or not less than <see cref="Count"/>.
+        /// </exception>
         /// <remarks>
         /// Setting a child form that is already an item of this form moves it into the place of the
         /// item at <paramref name="index"/>, which leaves the tree; the list is then one item shorter,

@@ -891,6 +891,12 @@ namespace SExpressions
 
         internal void ReplaceItem(int index, SItem item)
         {
+            // Checked here, not left to the array: a parsed form's items are a slice of a block its
+            // whole document shares, so an index outside the slice is still inside the array, and
+            // the write below would land in a neighbouring form's item.
+            ArgumentOutOfRangeException.ThrowIfNegative(index);
+            ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, ItemCount);
+
             var old = _items[_offset + index];
             if (old.RawValid && old == item)
             {
