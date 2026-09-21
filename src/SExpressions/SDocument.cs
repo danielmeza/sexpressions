@@ -123,8 +123,12 @@ namespace SExpressions
         private static bool IsUtf8Bom(ReadOnlySpan<byte> bytes) =>
             bytes.Length == 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
 
-        /// <summary>Appends a top-level form.</summary>
+        /// <summary>Appends a top-level form, moving it out of wherever it was.</summary>
         /// <param name="form">The form to append.</param>
+        /// <remarks>
+        /// A top-level form of this document moves to the end, and nothing changes if it is already
+        /// last. See <see cref="SExpression.AddChild"/>.
+        /// </remarks>
         public void Add(SExpression form) => _container.AddChild(form);
 
         /// <summary>Appends a top-level comment.</summary>

@@ -67,6 +67,27 @@ node.Clone()                       // keeps its source, so an untouched copy sti
 `Values`, `Children` and `Items` are **live views** over the same item list — mutate one and the
 others see it. Typed reads and writes use the invariant culture, always.
 
+**A form has one parent, so adding one moves it.** `AddChild`, `SDocument.Add`, and `Add`, `Insert`
+and the indexer on `Children` and `Items` take the form out of wherever it was, another document
+included, and put that same form here, its own bytes untouched. Add a `Clone()` to leave the
+original where it is.
+
+A form added to the list it is already in moves within that list:
+
+- **An insert index is where the form ends up**, read in the list without it, the way
+  `ObservableCollection<T>.Move` reads its new index. `Count` still means the end. On `[a, b, c]`,
+  `Insert(2, a)` and `Insert(3, a)` both give `[b, c, a]`, and `Insert(0, c)` gives `[c, a, b]`.
+  `Add` moves it after every item the form holds.
+- **A move to where it already is changes nothing.** The document is not marked modified and saves
+  byte for byte.
+- **Setting `Children[i]` or `Items[i]` to it replaces the item at `i`** as the list stood when you
+  set it. That item leaves the tree, the form closes the gap it left, and the list is one shorter:
+  on `[a, b, c]`, `Children[2] = a` gives `[b, a]`.
+
+A form that moves within one list is written exactly as one moved in from another form would be.
+The whitespace in front of it goes with it, and the separator where it lands is copied from its new
+neighbours. A comment that sat beside it is an item of its own and stays where it was.
+
 ### Parser knobs (`SExpressionParserOptions`)
 
 | Option | Default | Effect |

@@ -30,17 +30,51 @@ namespace SExpressions
         /// <inheritdoc />
         public bool IsReadOnly => false;
 
-        /// <inheritdoc />
+        /// <summary>Gets or sets the item at <paramref name="index"/>.</summary>
+        /// <param name="index">The item index.</param>
+        /// <remarks>
+        /// Setting a child form that is already an item of this form moves it into the place of the
+        /// item at <paramref name="index"/>, which leaves the tree; the list is then one item shorter,
+        /// and the form sits at <paramref name="index"/> - 1 when it came from in front of it. See
+        /// <see cref="SChildCollection.this[int]"/>.
+        /// </remarks>
         public SItem this[int index]
         {
             get => Owner.ItemsSpan[index];
             set => Owner.ReplaceItem(index, value);
         }
 
-        /// <inheritdoc />
+        /// <summary>Appends an item after every item the form holds.</summary>
+        /// <param name="item">The item. A child form moves out of wherever it was.</param>
+        /// <remarks>
+        /// A child form of this same form moves to the end, and nothing changes if it is already the
+        /// last item. See <see cref="Insert"/>.
+        /// </remarks>
         public void Add(SItem item) => Owner.InsertItem(Owner.ItemCount, item);
 
-        /// <inheritdoc />
+        /// <summary>Inserts an item at <paramref name="index"/>.</summary>
+        /// <param name="index">From 0 to <see cref="Count"/>.</param>
+        /// <param name="item">The item. A child form moves out of wherever it was.</param>
+        /// <remarks>
+        /// <para>
+        /// A child form belongs to one form at a time, so inserting one that another form holds, in
+        /// this document or another, takes it out of that form. Insert a
+        /// <see cref="SExpression.Clone"/> to leave the original where it is.
+        /// </para>
+        /// <para>
+        /// A child form of this same form is moved, not duplicated. <paramref name="index"/> is where
+        /// it ends up, read in the list without it, the way <c>ObservableCollection&lt;T&gt;.Move</c>
+        /// reads its new index; <see cref="Count"/> still means the end. So on <c>[a, b, c]</c>,
+        /// <c>Insert(2, a)</c> and <c>Insert(3, a)</c> both give <c>[b, c, a]</c>, and
+        /// <c>Insert(0, c)</c> gives <c>[c, a, b]</c>. When that is where it already is, nothing
+        /// changes, and the file still saves byte for byte.
+        /// </para>
+        /// <para>
+        /// A moved form is written as one moved in from another form would be: the whitespace in
+        /// front of it goes with it, the separator where it lands is copied from its new neighbours,
+        /// and its own text is untouched.
+        /// </para>
+        /// </remarks>
         public void Insert(int index, SItem item) => Owner.InsertItem(index, item);
 
         /// <inheritdoc />
@@ -290,7 +324,21 @@ namespace SExpressions
         /// <inheritdoc />
         public bool IsReadOnly => false;
 
-        /// <inheritdoc />
+        /// <summary>Gets or sets the child form at <paramref name="index"/>.</summary>
+        /// <param name="index">The child index.</param>
+        /// <remarks>
+        /// <para>
+        /// Setting replaces that child, which leaves the tree, with the form given, which moves out of
+        /// wherever it was. The form takes the replaced child's place in the file, keeping the
+        /// whitespace in front of it.
+        /// </para>
+        /// <para>
+        /// A form that is already a child here is moved the same way: the child replaced is the
+        /// one at <paramref name="index"/> when you set it, the form closes the gap it leaves behind,
+        /// and the list is one shorter. So on <c>[a, b, c]</c>, <c>this[2] = a</c> gives
+        /// <c>[b, a]</c>, with <c>a</c> at index 1, and <c>this[0] = c</c> gives <c>[c, b]</c>.
+        /// </para>
+        /// </remarks>
         public SExpression this[int index]
         {
             get
@@ -311,26 +359,59 @@ namespace SExpressions
             }
         }
 
-        /// <inheritdoc />
+        /// <summary>Appends a child form after every item the form holds, moving it out of wherever it was.</summary>
+        /// <param name="item">The form to append.</param>
+        /// <remarks>
+        /// A child of this same form moves to the end, and nothing changes if it is already the last
+        /// item. See <see cref="SExpression.AddChild"/>.
+        /// </remarks>
         public void Add(SExpression item) => Owner.AddChild(item);
 
-        /// <summary>Appends several child forms.</summary>
+        /// <summary>Appends several child forms, in order, each moving out of wherever it was.</summary>
         /// <param name="items">The forms to append.</param>
+        /// <remarks>
+        /// <paramref name="items"/> is read in full before the first form is added. Adding a form
+        /// moves it, so a lazy sequence over the children of the form it comes from, such as
+        /// <c>node.Children.AddRange(node.GetChildren("symbol"))</c> or
+        /// <c>other.Children.AddRange(node.Children)</c>, would otherwise skip some of them and, over
+        /// this form's own children, visit some twice.
+        /// </remarks>
         public void AddRange(IEnumerable<SExpression> items)
         {
             ArgumentNullException.ThrowIfNull(items);
-            foreach (var i in items)
+            foreach (var i in new List<SExpression>(items))
             {
                 Owner.AddChild(i);
             }
         }
 
-        /// <inheritdoc />
-        public void Insert(int index, SExpression item)
-        {
-            var i = ItemIndexOf(index);
-            Owner.InsertItem(i < 0 ? Owner.ItemCount : i, SItem.CreateExpression(item));
-        }
+        /// <summary>
+        /// Inserts a child form at <paramref name="index"/> among the child forms, moving it out of
+        /// wherever it was.
+        /// </summary>
+        /// <param name="index">
+        /// A child index. Past the last child, the form goes after every item the form holds.
+        /// </param>
+        /// <param name="item">The form to insert.</param>
+        /// <remarks>
+        /// <para>
+        /// A form belongs to one parent at a time, so one that another form holds, in this document
+        /// or another, leaves it. Insert <see cref="SExpression.Clone"/> to keep the original.
+        /// </para>
+        /// <para>
+        /// A form that is already a child here is moved, not duplicated.
+        /// <paramref name="index"/> is the child index it ends up at, read among the children
+        /// without it, the way <c>ObservableCollection&lt;T&gt;.Move</c> reads its new index;
+        /// <see cref="Count"/> still means the end. So on <c>[a, b, c]</c>, <c>Insert(2, a)</c> and
+        /// <c>Insert(3, a)</c> both give <c>[b, c, a]</c>, and <c>Insert(0, c)</c> gives
+        /// <c>[c, a, b]</c>. When the index is the one it already has, nothing changes, and the file
+        /// still saves byte for byte. Otherwise it lands where a new form inserted into the list
+        /// without it would, and is written as one moved in from another form: the whitespace in
+        /// front of it goes with it, the separator where it lands is copied from its new neighbours,
+        /// and its own text is untouched.
+        /// </para>
+        /// </remarks>
+        public void Insert(int index, SExpression item) => Owner.InsertChild(index, item);
 
         /// <inheritdoc />
         public void RemoveAt(int index)
@@ -421,24 +502,6 @@ namespace SExpressions
             }
         }
 
-        private int ItemIndexOf(int childIndex)
-        {
-            if (childIndex < 0)
-            {
-                return -1;
-            }
-
-            var seen = 0;
-            var items = Owner.ItemsSpan;
-            for (var i = 0; i < items.Length; i++)
-            {
-                if (items[i].Kind == SItemKind.Expression && seen++ == childIndex)
-                {
-                    return i;
-                }
-            }
-
-            return -1;
-        }
+        private int ItemIndexOf(int childIndex) => Owner.ItemIndexOfChild(childIndex, skip: null);
     }
 }
