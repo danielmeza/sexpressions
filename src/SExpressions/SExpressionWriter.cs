@@ -317,13 +317,36 @@ namespace SExpressions
             // this form -- or, for the container, which is not a form, the margin itself.
             var inline = container ? indent : indent.Deeper;
 
+            // A form opens with its header, but the container opens with whatever whitespace starts
+            // the file, and that belongs to the file rather than to the item that happened to come
+            // first. Whatever is written first now starts behind it, and an item that used to open
+            // the file gets a separator of its own once something is put in front of it. Without
+            // this, removing or moving the first top-level form left the next one's line break at
+            // the top of the file (#31), and inserting in front of the first one fused the two.
+            var leadEnd = bodyStart;
+            while (container && leadEnd < bodyEnd && IsSeparator(src[leadEnd]))
+            {
+                leadEnd++;
+            }
+
+            // Text that is nothing but whitespace has no opening, only an ending, and the closing
+            // separator below already writes that.
+            if (leadEnd == bodyEnd)
+            {
+                leadEnd = bodyStart;
+            }
+
             cursor = bodyStart;
             var previousWasComment = false;
             for (var i = 0; i < items.Length; i++)
             {
                 var item = items[i];
                 Indent itemIndent;
-                if (item.IsFromSource)
+                if (container && i == 0)
+                {
+                    itemIndent = AppendSourceSeparator(context, src, bodyStart, leadEnd, previousWasComment, inline, rebase);
+                }
+                else if (item.IsFromSource && !(container && OpensTheFile(src, cursor, item, bodyStart)))
                 {
                     // Only the whitespace immediately in front of the item is its separator.
                     // Anything before that is the text of items that have since been removed, and
@@ -332,7 +355,7 @@ namespace SExpressions
                 }
                 else
                 {
-                    itemIndent = AppendSynthesizedSeparator(context, src, items, i, bodyStart, bodyEnd, previousWasComment, inline, rebase);
+                    itemIndent = AppendSynthesizedSeparator(context, src, items, i, bodyStart, bodyEnd, container, previousWasComment, inline, rebase);
                 }
 
                 if (item.IsFromSource)
@@ -366,6 +389,14 @@ namespace SExpressions
 
             return true;
         }
+
+        /// <summary>
+        /// True when nothing but whitespace stands between the start of the container's text and
+        /// this item: it was the first thing in the file, so the whitespace in front of it is the
+        /// file's own opening and not a separator between two items.
+        /// </summary>
+        private static bool OpensTheFile(string src, int cursor, in SItem item, int bodyStart) =>
+            SeparatorStart(src, cursor, item.SourceStart) == bodyStart;
 
         /// <summary>
         /// True when a child form is still the one the parser put in this slot of this text. Its
@@ -434,12 +465,13 @@ namespace SExpressions
             int index,
             int bodyStart,
             int bodyEnd,
+            bool container,
             bool previousWasComment,
             Indent inline,
             Rebase rebase)
         {
             var sb = context.Builder;
-            var found = TryNeighbourSeparator(src, items, index, bodyStart, out var from, out var to);
+            var found = TryNeighbourSeparator(src, items, index, bodyStart, container, out var from, out var to);
             var lineBreak = found ? src.AsSpan(from, to - from).LastIndexOf('\n') : -1;
 
             // A comment cannot be followed on its own line; see AppendSourceSeparator.
@@ -482,10 +514,14 @@ namespace SExpressions
         /// that will FOLLOW the new item is preferred over the one behind it, because that is the
         /// slot the new item is taking and the sibling then keeps its own bytes unchanged.
         /// </summary>
-        private static bool TryNeighbourSeparator(string src, ReadOnlySpan<SItem> items, int index, int bodyStart, out int from, out int to)
+        /// <remarks>
+        /// In the container, the whitespace in front of the item that opens the file is not a
+        /// separator between two items, so it is never copied: it is usually empty.
+        /// </remarks>
+        private static bool TryNeighbourSeparator(string src, ReadOnlySpan<SItem> items, int index, int bodyStart, bool container, out int from, out int to)
         {
             var kind = items[index].Kind;
-            if (TryNeighbourSeparator(src, items, index, bodyStart, kind, out from, out to))
+            if (TryNeighbourSeparator(src, items, index, bodyStart, container, kind, out from, out to))
             {
                 return true;
             }
@@ -494,14 +530,14 @@ namespace SExpressions
             // is how "(token value ...)" is written wherever this format is used. Falling through to
             // a child form's separator here would push it onto a line of its own.
             return kind != SItemKind.Atom
-                && TryNeighbourSeparator(src, items, index, bodyStart, null, out from, out to);
+                && TryNeighbourSeparator(src, items, index, bodyStart, container, null, out from, out to);
         }
 
-        private static bool TryNeighbourSeparator(string src, ReadOnlySpan<SItem> items, int index, int bodyStart, SItemKind? kind, out int from, out int to)
+        private static bool TryNeighbourSeparator(string src, ReadOnlySpan<SItem> items, int index, int bodyStart, bool container, SItemKind? kind, out int from, out int to)
         {
             for (var i = index + 1; i < items.Length; i++)
             {
-                if (Matches(items[i], kind))
+                if (Matches(items[i], kind) && !(container && OpensTheFile(src, bodyStart, items[i], bodyStart)))
                 {
                     to = items[i].SourceStart;
                     from = SeparatorStart(src, bodyStart, to);
@@ -511,7 +547,7 @@ namespace SExpressions
 
             for (var i = index - 1; i >= 0; i--)
             {
-                if (Matches(items[i], kind))
+                if (Matches(items[i], kind) && !(container && OpensTheFile(src, bodyStart, items[i], bodyStart)))
                 {
                     to = items[i].SourceStart;
                     from = SeparatorStart(src, bodyStart, to);

@@ -63,6 +63,10 @@ Only whitespace at the start of a line changes; atoms, a quoted value that spans
 copied as they are. A node moved between two places indented the same way, such as a symbol between
 two KiCad 10 libraries, still comes across byte for byte.
 
+**The start of a document belongs to the file.** Removing or moving the first top-level form leaves
+the next item at the top, not behind the line break that used to separate them, and whatever
+whitespace opened the file stays there.
+
 ### Query and mutation
 
 ```csharp
