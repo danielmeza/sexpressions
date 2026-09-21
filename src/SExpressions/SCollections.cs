@@ -119,22 +119,19 @@ namespace SExpressions
             return true;
         }
 
-        /// <inheritdoc />
-        public IEnumerator<SItem> GetEnumerator() => Enumerate(Owner).GetEnumerator();
+        /// <summary>Walks the items the form holds at the moment this is called.</summary>
+        /// <returns>An enumerator over those items.</returns>
+        /// <remarks>
+        /// The loop may add, remove or move items; the walk still visits each item that was there
+        /// when it started, once, in order. See <see cref="SExpression"/>.
+        /// </remarks>
+        public IEnumerator<SItem> GetEnumerator() => ((IEnumerable<SItem>)Owner.WalkItems).GetEnumerator();
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
         /// <summary>Gets the items as a span, for allocation-free iteration.</summary>
         /// <returns>The span.</returns>
         public ReadOnlySpan<SItem> AsSpan() => Owner.ItemsSpan;
-
-        private static IEnumerable<SItem> Enumerate(SExpression owner)
-        {
-            for (var i = 0; i < owner.ItemCount; i++)
-            {
-                yield return owner.ItemAt(i);
-            }
-        }
     }
 
     /// <summary>
@@ -283,19 +280,23 @@ namespace SExpressions
             return true;
         }
 
-        /// <inheritdoc />
-        public IEnumerator<string> GetEnumerator() => Enumerate(Owner).GetEnumerator();
+        /// <summary>Walks the atoms the form holds at the moment this is called.</summary>
+        /// <returns>An enumerator over those atoms.</returns>
+        /// <remarks>
+        /// The loop may add or remove atoms, and <c>values.AddRange(values)</c> appends each atom
+        /// once. See <see cref="SExpression"/>.
+        /// </remarks>
+        public IEnumerator<string> GetEnumerator() => Enumerate(Owner.WalkItems).GetEnumerator();
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
-        private static IEnumerable<string> Enumerate(SExpression owner)
+        private static IEnumerable<string> Enumerate(ArraySegment<SItem> items)
         {
-            for (var n = 0; n < owner.ItemCount; n++)
+            foreach (var item in items)
             {
-                var i = owner.ItemAt(n);
-                if (i.Kind == SItemKind.Atom)
+                if (item.Kind == SItemKind.Atom)
                 {
-                    yield return i.Text!;
+                    yield return item.Text!;
                 }
             }
         }
@@ -506,19 +507,23 @@ namespace SExpressions
             return true;
         }
 
-        /// <inheritdoc />
-        public IEnumerator<SExpression> GetEnumerator() => Enumerate(Owner).GetEnumerator();
+        /// <summary>Walks the child forms the form holds at the moment this is called.</summary>
+        /// <returns>An enumerator over those children.</returns>
+        /// <remarks>
+        /// The loop may move, remove or add children: <c>foreach (var c in a.Children) b.AddChild(c)</c>
+        /// moves every one. See <see cref="SExpression"/>.
+        /// </remarks>
+        public IEnumerator<SExpression> GetEnumerator() => Enumerate(Owner.WalkItems).GetEnumerator();
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
-        private static IEnumerable<SExpression> Enumerate(SExpression owner)
+        private static IEnumerable<SExpression> Enumerate(ArraySegment<SItem> items)
         {
-            for (var n = 0; n < owner.ItemCount; n++)
+            foreach (var item in items)
             {
-                var i = owner.ItemAt(n);
-                if (i.Kind == SItemKind.Expression)
+                if (item.Kind == SItemKind.Expression)
                 {
-                    yield return i.Expression!;
+                    yield return item.Expression!;
                 }
             }
         }

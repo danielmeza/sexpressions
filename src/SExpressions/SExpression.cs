@@ -19,6 +19,14 @@ namespace SExpressions
     /// <see cref="Values"/> and <see cref="Children"/> are live views over it, so a form written as
     /// <c>(a 1 (b) 2)</c> is written back as <c>(a 1 (b) 2)</c> and not as <c>(a 1 2 (b))</c>.
     /// </para>
+    /// <para>
+    /// A walk -- a <c>foreach</c> over a view, <see cref="GetChildren"/>, <see cref="Descendants"/>
+    /// or <see cref="Comments"/> -- visits what the form held when the walk started. The loop may
+    /// add, remove or move items of the form it is walking, and the walk neither skips nor
+    /// revisits any because of it; the next walk sees the form as it is then. <c>Count</c> and the
+    /// indexers stay live. An item replaced in place during the walk (an indexer, or
+    /// <see cref="SetValue(int, string, SQuoteStyle)"/>) may be visited as it was or as it is now.
+    /// </para>
     /// </remarks>
     public sealed class SExpression
     {
@@ -150,15 +158,13 @@ namespace SExpressions
         /// <summary>
         /// Gets the comments attached inside this form, in order, without their leading <c>#</c>.
         /// </summary>
+        /// <remarks>The comments are those the form held when the walk started; see <see cref="SExpression"/>.</remarks>
         public IEnumerable<string> Comments
         {
             get
             {
-                // Indexed rather than a foreach over ItemsSpan: this is an iterator, and the span
-                // would have to live across a yield.
-                for (var i = 0; i < ItemCount; i++)
+                foreach (var item in WalkItems)
                 {
-                    var item = ItemAt(i);
                     if (item.Kind == SItemKind.Comment)
                     {
                         yield return item.Text ?? string.Empty;
@@ -193,9 +199,19 @@ namespace SExpressions
         internal int ItemCount => _countAndFlags >>> FlagShift;
 
         /// <summary>
-        /// One item by index. Exists for the iterator methods, where a <c>ref struct</c> local cannot
-        /// live across a <c>yield</c>.
+        /// This form's items as they are now, to walk: the array and the window they sit in.
         /// </summary>
+        /// <remarks>
+        /// No copy is made, and none is needed. Every insert, removal or move copies the items into a
+        /// new array and leaves the old one alone (see <see cref="InsertItem"/>), so a walk over the
+        /// window it took at its start sees the form as it was then, however the loop changes the
+        /// form. Unlike <see cref="ItemsSpan"/>, it can be held across a <c>yield</c>. The one write
+        /// that lands in place is a replacement (<see cref="ReplaceItem"/>), which a walk that has
+        /// not reached it yet may see.
+        /// </remarks>
+        internal ArraySegment<SItem> WalkItems => new(_items, _offset, ItemCount);
+
+        /// <summary>One item by index, read live.</summary>
         internal SItem ItemAt(int index) => _items[_offset + index];
 
         /// <summary>True when the source text of this form's <c>(token</c> is stale and cannot be copied.</summary>
@@ -280,11 +296,14 @@ namespace SExpressions
         /// </summary>
         /// <param name="token">The token to search for.</param>
         /// <returns>An enumerable of matching child expressions.</returns>
+        /// <remarks>
+        /// A walk visits the children the form held when it started, so it may move or remove them:
+        /// <c>foreach (var s in a.GetChildren("symbol")) b.AddChild(s)</c> moves every one.
+        /// </remarks>
         public IEnumerable<SExpression> GetChildren(string token)
         {
-            for (var i = 0; i < ItemCount; i++)
+            foreach (var item in WalkItems)
             {
-                var item = ItemAt(i);
                 if (item.Kind == SItemKind.Expression && string.Equals(item.Expression!.Token, token, StringComparison.Ordinal))
                 {
                     yield return item.Expression;
@@ -330,11 +349,14 @@ namespace SExpressions
         /// </summary>
         /// <param name="token">When given, only forms with this token are returned.</param>
         /// <returns>The matching descendants.</returns>
+        /// <remarks>
+        /// Each form's children are the ones it held when the walk reached it; see
+        /// <see cref="SExpression"/>.
+        /// </remarks>
         public IEnumerable<SExpression> Descendants(string? token = null)
         {
-            for (var i = 0; i < ItemCount; i++)
+            foreach (var item in WalkItems)
             {
-                var item = ItemAt(i);
                 if (item.Kind != SItemKind.Expression)
                 {
                     continue;

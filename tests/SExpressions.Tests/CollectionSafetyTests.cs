@@ -162,4 +162,151 @@ public class CollectionSafetyTests
 
         Assert.Equal("(at 1 2 9 (x))\n", document.ToText());
     }
+
+    // ------------------------------------ #29: a walk visits what the form held when it started
+
+    [Fact]
+    public void ForeachOverChildren_MovingEachToAnotherForm_MovesThemAll()
+    {
+        var document = SDocument.Parse("(root\n\t(a 1)\n\t(b 2)\n\t(c 3)\n)\n");
+        var destination = new SExpression("dst");
+
+        foreach (var child in document.Root!.Children)
+        {
+            destination.AddChild(child);
+        }
+
+        Assert.Equal(["a", "b", "c"], destination.Children.Select(c => c.Token));
+        Assert.Empty(document.Root.Children);
+    }
+
+    [Fact]
+    public void ForeachOverChildren_RemovingEach_RemovesThemAll()
+    {
+        var document = SDocument.Parse("(root\n\t(a 1)\n\t(b 2)\n\t(c 3)\n)\n");
+        var children = document.Root!.Children;
+
+        foreach (var child in children)
+        {
+            Assert.True(children.Remove(child));
+        }
+
+        Assert.Empty(children);
+        Assert.Equal("(root\n)\n", document.ToText());
+    }
+
+    [Fact]
+    public void ForeachOverTheDocument_MovingEachFormToAnother_MovesThemAll()
+    {
+        var source = SDocument.Parse("(a)\n(b)\n(c)\n");
+        var destination = new SDocument();
+
+        foreach (var form in source)
+        {
+            destination.Add(form);
+        }
+
+        Assert.Equal(3, destination.Count);
+        Assert.Empty(source);
+    }
+
+    [Fact]
+    public void ForeachOverItems_InsertingInFrontOfEach_VisitsEachOriginalItemOnce()
+    {
+        var document = SDocument.Parse("(root 1 (a) # note\n 2)\n");
+        var items = document.Root!.Items;
+        var visited = new List<string>();
+
+        foreach (var item in items)
+        {
+            visited.Add(item.ToString());
+            items.Insert(0, SItem.CreateAtom("x"));
+            Assert.True(visited.Count <= 10, "the walk followed the inserts instead of ending");
+        }
+
+        Assert.Equal(["1", "(a )", "# note", "2"], visited);
+        Assert.Equal(8, items.Count);
+    }
+
+    [Fact]
+    public void ForeachOverValues_AppendingDuringTheWalk_Ends_AndAddRangeOfItselfDoubles()
+    {
+        var document = SDocument.Parse("(at 1 2)\n");
+        var values = document.Root!.Values;
+        var visited = 0;
+
+        foreach (var value in values)
+        {
+            values.Add(value + "0");
+            Assert.True(++visited <= 10, "the walk followed the appends instead of ending");
+        }
+
+        Assert.Equal(2, visited);
+        Assert.Equal(["1", "2", "10", "20"], values.ToArray());
+
+        // What never returned: every append made the walk one longer.
+        values.AddRange(values);
+        Assert.Equal(["1", "2", "10", "20", "1", "2", "10", "20"], values.ToArray());
+    }
+
+    [Fact]
+    public void GetChildrenDescendantsAndComments_VisitWhatWasThereWhenTheWalkStarted()
+    {
+        // Siblings side by side, so that a live walk, shifted by one removal, steps over the next.
+        var document = SDocument.Parse("(root\n\t# one\n\t# two\n\t(s 1)\n\t(s 2 (s 3))\n\t(t)\n)\n");
+        var root = document.Root!;
+        var elsewhere = new SExpression("elsewhere");
+
+        var moved = new List<string>();
+        foreach (var s in root.GetChildren("s"))
+        {
+            elsewhere.AddChild(s);
+            moved.Add(s.GetValue(0)!);
+        }
+
+        Assert.Equal(["1", "2"], moved);
+        Assert.Empty(root.GetChildren("s"));
+
+        var comments = new List<string>();
+        foreach (var comment in root.Comments)
+        {
+            root.Items.RemoveAt(root.Items.IndexOf(SItem.CreateComment(comment)));
+            comments.Add(comment);
+        }
+
+        Assert.Equal([" one", " two"], comments);
+        Assert.Empty(root.Comments);
+
+        var descendants = new List<string>();
+        foreach (var d in elsewhere.Descendants("s"))
+        {
+            descendants.Add(d.GetValue(0)!);
+            d.Parent!.Children.Remove(d);
+        }
+
+        Assert.Equal(["1", "2", "3"], descendants);
+    }
+
+    [Fact]
+    public void AWalk_IsFixedWhenItStarts_WhileCountAndTheIndexerStayLive()
+    {
+        var document = SDocument.Parse("(root (a) (b))\n");
+        var children = document.Root!.Children;
+
+        using var walk = children.GetEnumerator();
+        children.Add(new SExpression("c"));
+
+        Assert.Equal(3, children.Count);
+        Assert.Equal("c", children[2].Token);
+
+        // The walk was fixed when it started, before c; a new one sees c.
+        var first = new List<string>();
+        while (walk.MoveNext())
+        {
+            first.Add(walk.Current.Token);
+        }
+
+        Assert.Equal(["a", "b"], first);
+        Assert.Equal(["a", "b", "c"], children.Select(c => c.Token));
+    }
 }
