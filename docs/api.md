@@ -88,6 +88,25 @@ A form that moves within one list is written exactly as one moved in from anothe
 The whitespace in front of it goes with it, and the separator where it lands is copied from its new
 neighbours. A comment that sat beside it is an item of its own and stays where it was.
 
+**An `SItem` taken from a parse is written from what it holds, not from where it was parsed.**
+Inserted anywhere, from this document or another, an atom or comment is rendered from its text and
+the quoting it arrived with, behind a separator copied from its new neighbours. Only its own bytes
+are added.
+
+**Out of range throws, as `IList<T>` says.** `Insert` on `Items`, `Children` and `Values` takes 0
+to `Count`, and `Count` appends; the `Items` and `Children` indexers take 0 to `Count - 1`.
+Anything else throws `ArgumentOutOfRangeException` before anything changes.
+
+**A form cannot contain itself.** Adding a form to itself, or into a form nested inside it, throws
+`InvalidOperationException` before anything moves. Moving a descendant up or out is fine.
+
+**A walk visits what the form held when it started.** A `foreach` over `Items`, `Children` or
+`Values`, or a walk of `GetChildren`, `Descendants` or `Comments`, may add, remove or move items of
+the form it walks: `foreach (var c in a.Children) b.AddChild(c)` moves every child, and
+`values.AddRange(values)` appends each value once. The next walk sees the form as it is then.
+`Count` and the indexers stay live. An item replaced in place during a walk (an indexer, or
+`SetValue`) may be visited as it was or as it is now.
+
 ### Parser knobs (`SExpressionParserOptions`)
 
 | Option | Default | Effect |
