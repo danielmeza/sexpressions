@@ -243,6 +243,38 @@ public class SameParentMoveTests
         }
     }
 
+    [Fact]
+    public void AddRange_OverTheFormsOwnChildren_MovesEachOnceInTheOrderGiven()
+    {
+        // AddRange reads its argument before adding anything. Read lazily instead, GetChildren
+        // walks the live list while each add moves what it yielded to the end: s1 is visited twice
+        // and s2 never, giving (h s2 t s3 s1). On 0.1.3 the first add threw.
+        var document = SDocument.Parse("(root\n\t(h)\n\t(s 1)\n\t(s 2)\n\t(s 3)\n\t(t)\n)\n");
+        var root = document.Root!;
+
+        root.Children.AddRange(root.GetChildren("s"));
+
+        Assert.Equal("(root\n\t(h)\n\t(t)\n\t(s 1)\n\t(s 2)\n\t(s 3)\n)\n", document.ToText());
+
+        // Every child to the end, in its own order: the order it already had.
+        root.Children.AddRange(root.Children);
+        Assert.Equal(["h", "t", "s", "s", "s"], root.Children.Select(c => c.Token));
+        Assert.Equal("(root\n\t(h)\n\t(t)\n\t(s 1)\n\t(s 2)\n\t(s 3)\n)\n", document.ToText());
+    }
+
+    [Fact]
+    public void AddRange_OverAnotherFormsChildren_MovesThemAll()
+    {
+        var source = SDocument.Parse("(src\n\t(a 1)\n\t(b 2)\n\t(c 3)\n)\n");
+        var destination = SDocument.Parse("(dst\n\t(x 0)\n)\n");
+
+        // Read lazily, the source's live list shrinks under the walk and b is skipped.
+        destination.Root!.Children.AddRange(source.Root!.Children);
+
+        Assert.Equal("(dst\n\t(x 0)\n\t(a 1)\n\t(b 2)\n\t(c 3)\n)\n", destination.ToText());
+        Assert.Empty(source.Root.Children);
+    }
+
     [Theory]
     [MemberData(nameof(LayoutNames))]
     public void AnIndexOutOfRangeForAnyItem_StillThrows_AndChangesNothing(string layout)

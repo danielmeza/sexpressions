@@ -367,12 +367,19 @@ namespace SExpressions
         /// </remarks>
         public void Add(SExpression item) => Owner.AddChild(item);
 
-        /// <summary>Appends several child forms.</summary>
+        /// <summary>Appends several child forms, in order, each moving out of wherever it was.</summary>
         /// <param name="items">The forms to append.</param>
+        /// <remarks>
+        /// <paramref name="items"/> is read in full before the first form is added. Adding a form
+        /// moves it, so a lazy sequence over the children of the form it comes from, such as
+        /// <c>node.Children.AddRange(node.GetChildren("symbol"))</c> or
+        /// <c>other.Children.AddRange(node.Children)</c>, would otherwise skip some of them and, over
+        /// this form's own children, visit some twice.
+        /// </remarks>
         public void AddRange(IEnumerable<SExpression> items)
         {
             ArgumentNullException.ThrowIfNull(items);
-            foreach (var i in items)
+            foreach (var i in new List<SExpression>(items))
             {
                 Owner.AddChild(i);
             }
