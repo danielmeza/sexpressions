@@ -583,17 +583,9 @@ public class SameParentMoveTests
             return;
         }
 
-        var baseline = Corpus.Stage(Relative, src);
-        var candidate = Corpus.Stage(Relative, moved);
-        try
-        {
-            Assert.Equal(Upgraded(baseline.File), Upgraded(candidate.File));
-        }
-        finally
-        {
-            Directory.Delete(baseline.Dir, recursive: true);
-            Directory.Delete(candidate.Dir, recursive: true);
-        }
+        using var baseline = Corpus.Stage(Relative, src);
+        using var candidate = Corpus.Stage(Relative, moved);
+        Assert.Equal(Upgraded(baseline.File), Upgraded(candidate.File));
     }
 
     // ------------------------------------------------------------------------------- helpers

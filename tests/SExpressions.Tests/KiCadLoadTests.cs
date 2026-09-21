@@ -53,17 +53,9 @@ public class KiCadLoadTests
         var src = Corpus.Read(relative);
         var written = Canonical(src);
 
-        var baseline = Corpus.Stage(relative, src);
-        var candidate = Corpus.Stage(relative, written);
-        try
-        {
-            Assert.Equal(BoardStats(baseline.File), BoardStats(candidate.File));
-        }
-        finally
-        {
-            Directory.Delete(baseline.Dir, recursive: true);
-            Directory.Delete(candidate.Dir, recursive: true);
-        }
+        using var baseline = Corpus.Stage(relative, src);
+        using var candidate = Corpus.Stage(relative, written);
+        Assert.Equal(BoardStats(baseline.File), BoardStats(candidate.File));
     }
 
     [Fact]
@@ -77,17 +69,9 @@ public class KiCadLoadTests
         const string Relative = "libs/orbion.kicad_sym";
         var src = Corpus.Read(Relative);
 
-        var baseline = Corpus.Stage(Relative, src);
-        var candidate = Corpus.Stage(Relative, Canonical(src));
-        try
-        {
-            Assert.Equal(Upgraded(baseline.File), Upgraded(candidate.File));
-        }
-        finally
-        {
-            Directory.Delete(baseline.Dir, recursive: true);
-            Directory.Delete(candidate.Dir, recursive: true);
-        }
+        using var baseline = Corpus.Stage(Relative, src);
+        using var candidate = Corpus.Stage(Relative, Canonical(src));
+        Assert.Equal(Upgraded(baseline.File), Upgraded(candidate.File));
     }
 
     /// <summary>
@@ -112,23 +96,15 @@ public class KiCadLoadTests
         var src = Corpus.Read(relative);
         foreach (var candidateText in new[] { SDocument.Parse(src).ToText(), Canonical(src) })
         {
-            var baseline = Corpus.Stage(probe, Corpus.Read(probe));
-            var candidate = Corpus.Stage(probe, Corpus.Read(probe));
-            try
-            {
-                File.WriteAllText(Path.Combine(baseline.Dir, "probe-4layer.kicad_dru"), src);
-                File.WriteAllText(Path.Combine(candidate.Dir, "probe-4layer.kicad_dru"), candidateText);
+            using var baseline = Corpus.Stage(probe, Corpus.Read(probe));
+            using var candidate = Corpus.Stage(probe, Corpus.Read(probe));
+            File.WriteAllText(Path.Combine(baseline.Dir, "probe-4layer.kicad_dru"), src);
+            File.WriteAllText(Path.Combine(candidate.Dir, "probe-4layer.kicad_dru"), candidateText);
 
-                var expected = Drc(baseline.File, baseline.Dir);
-                var actual = Drc(candidate.File, candidate.Dir);
-                Assert.True(expected.Count > 0, "the probe board should report violations, otherwise this proves nothing");
-                Assert.Equal(expected, actual);
-            }
-            finally
-            {
-                Directory.Delete(baseline.Dir, recursive: true);
-                Directory.Delete(candidate.Dir, recursive: true);
-            }
+            var expected = Drc(baseline.File, baseline.Dir);
+            var actual = Drc(candidate.File, candidate.Dir);
+            Assert.True(expected.Count > 0, "the probe board should report violations, otherwise this proves nothing");
+            Assert.Equal(expected, actual);
         }
     }
 

@@ -142,19 +142,11 @@ public class FidelityTests
         var src = Corpus.Read(relative);
         var written = RoundTripCanonical(src);
 
-        var baseline = Corpus.Stage(relative, src);
-        var candidate = Corpus.Stage(relative, written);
-        try
-        {
-            var a = ExportNetlist(baseline.File, baseline.Dir);
-            var b = ExportNetlist(candidate.File, candidate.Dir);
-            Assert.Equal(a, b);
-        }
-        finally
-        {
-            Directory.Delete(baseline.Dir, recursive: true);
-            Directory.Delete(candidate.Dir, recursive: true);
-        }
+        using var baseline = Corpus.Stage(relative, src);
+        using var candidate = Corpus.Stage(relative, written);
+        var a = ExportNetlist(baseline.File, baseline.Dir);
+        var b = ExportNetlist(candidate.File, candidate.Dir);
+        Assert.Equal(a, b);
     }
 
     [Theory]

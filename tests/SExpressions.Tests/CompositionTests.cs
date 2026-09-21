@@ -428,19 +428,11 @@ public class CompositionTests
         var composed = document.ToText();
         Assert.Contains("(italic no))", composed, StringComparison.Ordinal);
 
-        var baseline = Corpus.Stage(Relative, src);
-        var candidate = Corpus.Stage(Relative, composed);
-        try
-        {
-            var expected = Netlist(baseline.File, baseline.Dir);
-            Assert.True(expected.Length > 20_000, $"the baseline netlist is only {expected.Length} chars; this would prove nothing");
-            Assert.Equal(expected, Netlist(candidate.File, candidate.Dir));
-        }
-        finally
-        {
-            Directory.Delete(baseline.Dir, recursive: true);
-            Directory.Delete(candidate.Dir, recursive: true);
-        }
+        using var baseline = Corpus.Stage(Relative, src);
+        using var candidate = Corpus.Stage(Relative, composed);
+        var expected = Netlist(baseline.File, baseline.Dir);
+        Assert.True(expected.Length > 20_000, $"the baseline netlist is only {expected.Length} chars; this would prove nothing");
+        Assert.Equal(expected, Netlist(candidate.File, candidate.Dir));
     }
 
     // ------------------------------------------------------------------------------- helpers
