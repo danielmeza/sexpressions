@@ -47,6 +47,22 @@ container's closing paren keeps its column. Measured on a 170,001-byte schematic
 `(wire …)` to the root is **+150 bytes across 11 new lines and 0 rewritten ones**, and the whole
 diff is a single contiguous insertion.
 
+**A new node is indented the way the file already is.** Its first line copies the indentation of
+the sibling it copied its separator from, and every line below that is laid out from the same text,
+in the file's own unit: a table written by KiCad 8 with two spaces gets two spaces, a KiCad 10 file
+gets tabs. The unit is read off the file, from how far a child on a line of its own sits inside its
+parent, so `SExpressionWriterOptions.Indent` only applies to `Canonical`, to a tree built in memory,
+and to a file that shows no indentation to follow. No line of a new node sits deeper than the
+sibling it lines up with, even in a file whose indentation does not match its nesting.
+
+**A parsed node that moves keeps its bytes but not its old indentation.** Taken from another file,
+or from another depth of this one — a symbol out of a schematic's `lib_symbols` into a library, say —
+it is re-indented line by line onto where it now stands: its first line where its new siblings
+start, and each step further in, in its old file's unit, one step in the unit of the file it joined.
+Only whitespace at the start of a line changes; atoms, a quoted value that spans lines included, are
+copied as they are. A node moved between two places indented the same way, such as a symbol between
+two KiCad 10 libraries, still comes across byte for byte.
+
 ### Query and mutation
 
 ```csharp
@@ -62,6 +78,7 @@ node.SetValue(i, s, quote) / SetValue<T>(i, v, format) / SetChildValue(t, s)
 node.AddValue / AddValues / AddChild / CreateChild / AddComment
 node.RemoveChild(t) / RemoveChildren(t)
 node.Clone()                       // keeps its source, so an untouched copy still writes byte-for-byte
+                                   // (re-indented if it is added somewhere indented differently)
 ```
 
 `Values`, `Children` and `Items` are **live views** over the same item list — mutate one and the
