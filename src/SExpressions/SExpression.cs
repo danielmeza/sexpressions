@@ -558,6 +558,13 @@ namespace SExpressions
         /// <param name="value">The new text.</param>
         /// <param name="quote">How to write it; <see cref="SQuoteStyle.Auto"/> keeps the style the atom already had.</param>
         /// <returns>This expression, for chaining.</returns>
+        /// <remarks>
+        /// An index at or past <see cref="SValueCollection.Count"/> appends an empty atom for each
+        /// value skipped, then <paramref name="value"/>: <c>SetValue(4, "x")</c> on <c>(at 1 2)</c>
+        /// gives <c>(at 1 2 "" "" x)</c>. The <see cref="Values"/> indexer throws for that index
+        /// instead, as <c>IList&lt;string&gt;</c> says.
+        /// </remarks>
+        /// <exception cref="ArgumentOutOfRangeException"><paramref name="index"/> is negative.</exception>
         public SExpression SetValue(int index, string value, SQuoteStyle quote = SQuoteStyle.Auto)
         {
             ArgumentNullException.ThrowIfNull(value);

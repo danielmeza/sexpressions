@@ -3,12 +3,14 @@ namespace SExpressions.Tests;
 /// <summary>
 /// The contracts of the mutable views -- <see cref="SExpression.Items"/>, <see cref="SExpression.Children"/>,
 /// <see cref="SExpression.Values"/> -- and of the walks over a form, where they used to corrupt the
-/// tree, lose data on save, or never return (#26 to #30).
+/// tree, lose data on save, or never return (#26 to #30), and where the <c>Values</c> indexer
+/// added atoms nobody asked for (#38).
 /// </summary>
 /// <remarks>
 /// Each fix's tests fail on 95311b7, except the few that pin what already held and must stay so:
 /// <c>Insert</c> at <c>Count</c> still appends, <c>Values.Insert(-1)</c> still throws, a descendant
-/// may still move up or out, and <c>Descendants</c> keeps its order. None of them calls
+/// may still move up or out, <c>Descendants</c> keeps its order, and <c>SetValue</c> still pads
+/// past the end. None of them calls
 /// <c>ToText</c> on a tree the old code would have left cyclic: that overflows the stack and takes
 /// the test host with it.
 /// </remarks>
@@ -164,6 +166,55 @@ public class CollectionSafetyTests
         values.Insert(values.Count, "9");
 
         Assert.Equal("(at 1 2 9 (x))\n", document.ToText());
+    }
+
+    // ------------------------------------------------------------- #38: the Values indexer
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(2)]
+    [InlineData(5)]
+    [InlineData(99)]
+    public void ValuesSet_OutsideZeroToCountMinusOne_Throws_AndChangesNothing(int index)
+    {
+        // MEASURED on 95311b7: values[5] = "x" on (at 1 2) gave (at 1 2 "" "" "" x) and Count 6,
+        // where IList<string>, which Values implements, says ArgumentOutOfRangeException. The
+        // getter already threw for the same index.
+        const string Source = "(at 1 2)\n";
+        var document = SDocument.Parse(Source);
+        var values = document.Root!.Values;
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => values[index] = "x");
+
+        Assert.Equal(2, values.Count);
+        Assert.False(document.IsModified);
+        Assert.Equal(Source, document.ToText());
+    }
+
+    [Fact]
+    public void ValuesSet_WithinRange_ReplacesThatAtom_AndKeepsItsQuoting()
+    {
+        // The index counts atoms, not items: the form between them does not shift it.
+        var document = SDocument.Parse("(at 1 (x) \"2\")\n");
+        var values = document.Root!.Values;
+
+        values[1] = "9";
+
+        Assert.Equal(2, values.Count);
+        Assert.Equal("(at 1 (x) \"9\")\n", document.ToText());
+    }
+
+    [Fact]
+    public void SetValue_PastTheEnd_StillPadsWithEmptyAtoms()
+    {
+        // SetValue documents the padding, and KiCadSharp writes a rotation into (at x y) with
+        // SetValue(2, ...). Only the indexer changes.
+        var document = SDocument.Parse("(at 1 2)\n");
+
+        document.Root!.SetValue(4, "x");
+
+        Assert.Equal(5, document.Root.Values.Count);
+        Assert.Equal("(at 1 2 \"\" \"\" x)\n", document.ToText());
     }
 
     // ------------------------------------ #29: a walk visits what the form held when it started

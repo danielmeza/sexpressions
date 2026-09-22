@@ -184,11 +184,30 @@ namespace SExpressions
         /// <inheritdoc />
         public bool IsReadOnly => false;
 
-        /// <inheritdoc />
+        /// <summary>Gets or sets the atom at <paramref name="index"/>, counted among the atoms.</summary>
+        /// <param name="index">The atom index, from 0 to <see cref="Count"/> - 1.</param>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// <paramref name="index"/> is negative, or not less than <see cref="Count"/>.
+        /// </exception>
+        /// <remarks>
+        /// Setting replaces that atom and keeps the quoting it had. This indexer never adds an
+        /// atom: to write past the end, which appends empty atoms up to the index, call
+        /// <see cref="SExpression.SetValue(int, string, SQuoteStyle)"/>.
+        /// </remarks>
         public string this[int index]
         {
             get => Owner.GetValue(index) ?? throw new ArgumentOutOfRangeException(nameof(index));
-            set => Owner.SetValue(index, value);
+            set
+            {
+                ArgumentNullException.ThrowIfNull(value);
+                var i = ItemIndexOf(index);
+                if (i < 0)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(index));
+                }
+
+                Owner.ReplaceItem(i, SItem.CreateAtom(value, Owner.ItemAt(i).QuoteStyle));
+            }
         }
 
         /// <inheritdoc />

@@ -115,8 +115,10 @@ the quoting it arrived with, behind a separator copied from its new neighbours. 
 are added.
 
 **Out of range throws, as `IList<T>` says.** `Insert` on `Items`, `Children` and `Values` takes 0
-to `Count`, and `Count` appends; the `Items` and `Children` indexers take 0 to `Count - 1`.
-Anything else throws `ArgumentOutOfRangeException` before anything changes.
+to `Count`, and `Count` appends; the `Items`, `Children` and `Values` indexers take 0 to
+`Count - 1`. Anything else throws `ArgumentOutOfRangeException` before anything changes. Only
+`SetValue(i, ...)` writes past the end: it appends an empty atom for each value skipped, so
+`SetValue(4, "x")` on `(at 1 2)` gives `(at 1 2 "" "" x)`, where `Values[4] = "x"` throws.
 
 **A form cannot contain itself.** Adding a form to itself, or into a form nested inside it, throws
 `InvalidOperationException` before anything moves. Moving a descendant up or out is fine.
