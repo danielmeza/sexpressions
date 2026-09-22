@@ -10,6 +10,22 @@ public static class Corpus
 {
     public static readonly string? Root = FindRoot();
 
+    /// <summary>
+    /// Corpus files cut short on purpose, relative to the root. They exist to test tools that must
+    /// report a file they cannot read, so they are no longer KiCad files and nothing here
+    /// round-trips them; <c>CorpusTests</c> checks instead that the parser and the reader both
+    /// refuse each one.
+    /// </summary>
+    /// <remarks>
+    /// Named, not detected. A file that stops parsing for any other reason is a parser regression
+    /// or a corpus change somebody has to look at, and it must still fail the round-trip tests.
+    /// </remarks>
+    public static readonly IReadOnlyList<string> BrokenOnPurpose =
+    [
+        // Cut off inside its (layers block; see the README beside it.
+        Path.Combine("tests", "design-rules", "audit-fixtures", "footprint", "board-unreadable", "board-unreadable.kicad_pcb"),
+    ];
+
     private static string? FindRoot()
     {
         var env = Environment.GetEnvironmentVariable("ORBION_KICAD_ROOT");
@@ -100,7 +116,11 @@ public static class Corpus
 
             foreach (var f in Directory.GetFiles(full, "*.kicad_pcb", SearchOption.AllDirectories).OrderBy(x => x, StringComparer.Ordinal))
             {
-                yield return Path.GetRelativePath(Root, f);
+                var relative = Path.GetRelativePath(Root, f);
+                if (!BrokenOnPurpose.Contains(relative, StringComparer.Ordinal))
+                {
+                    yield return relative;
+                }
             }
         }
     }
@@ -148,6 +168,15 @@ public static class Corpus
         public string All => StdOut + StdErr;
     }
 
+    /// <summary>How long one kicad-cli run may take before the test gives up on it.</summary>
+    private static readonly TimeSpan CliTimeout = TimeSpan.FromMinutes(5);
+
+    /// <remarks>
+    /// Both streams are read while the process runs, and the timeout is real. The old version read
+    /// stdout to the end first, which blocks until kicad-cli exits, so a hung kicad-cli hung the
+    /// test run until something killed it -- and a killed run leaves its staging directories
+    /// behind. A run that times out is killed, with its children, and fails the test.
+    /// </remarks>
     public static CliResult RunCli(params string[] args)
     {
         var psi = new ProcessStartInfo(RequireKiCadCli())
@@ -164,34 +193,179 @@ public static class Corpus
         }
 
         using var p = Process.Start(psi)!;
-        var stdout = p.StandardOutput.ReadToEnd();
-        var stderr = p.StandardError.ReadToEnd();
-        p.WaitForExit(300_000);
-        return new CliResult(p.ExitCode, stdout, stderr);
+        var stdout = p.StandardOutput.ReadToEndAsync();
+        var stderr = p.StandardError.ReadToEndAsync();
+        if (!p.WaitForExit(CliTimeout))
+        {
+            p.Kill(entireProcessTree: true);
+            p.WaitForExit();
+            Assert.Fail($"kicad-cli {string.Join(' ', args)} did not finish within {CliTimeout.TotalMinutes} minutes and was killed.");
+        }
+
+        p.WaitForExit();
+        return new CliResult(p.ExitCode, stdout.GetAwaiter().GetResult(), stderr.GetAwaiter().GetResult());
     }
 
     /// <summary>
     /// Copies the project directory that holds <paramref name="relative"/> to a scratch directory so
     /// relative references (lib tables, project file) still resolve, then overwrites the one file.
     /// </summary>
-    public static (string Dir, string File) Stage(string relative, string newContent)
+    /// <returns>The copy, which deletes itself when disposed: take it with <c>using var</c>.</returns>
+    /// <remarks>
+    /// Nothing is left behind by a failure: a copy that fails half way deletes what it wrote, and
+    /// with <c>using var</c> a second <c>Stage</c> that throws still disposes the first. A run that
+    /// is killed cannot clean up after itself, so each run stages under a directory of its own,
+    /// and the next run removes the ones whose process is gone (<see cref="SweepAbandonedRuns"/>).
+    /// </remarks>
+    public static StagedCopy Stage(string relative, string newContent)
     {
-        var root = RequireRoot();
-        var srcDir = Path.GetDirectoryName(Path.Combine(root, relative))!;
-        // MEASURED: kicad-cli here is a flatpak, and `--filesystem=host` does NOT expose /tmp --
-        // the sandbox has its own. Staging under $HOME (or ORBION_SEXPR_SCRATCH) is visible to both.
-        var scratch = Environment.GetEnvironmentVariable("ORBION_SEXPR_SCRATCH")
-            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache", "sexpr-roundtrip");
+        var srcDir = Path.GetDirectoryName(Path.Combine(RequireRoot(), relative))!;
+        return StageInto(RunScratch.Value, srcDir, Path.GetFileName(relative), newContent);
+    }
+
+    /// <summary>
+    /// The copy <see cref="Stage"/> makes, into a new directory under <paramref name="scratch"/>.
+    /// Separate so that its failure path can be tested without the corpus.
+    /// </summary>
+    public static StagedCopy StageInto(string scratch, string srcDir, string fileName, string newContent)
+    {
         var dstDir = Path.Combine(scratch, Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dstDir);
-        foreach (var f in Directory.GetFiles(srcDir))
+        try
         {
-            File.Copy(f, Path.Combine(dstDir, Path.GetFileName(f)));
+            foreach (var f in Directory.GetFiles(srcDir))
+            {
+                File.Copy(f, Path.Combine(dstDir, Path.GetFileName(f)));
+            }
+
+            var target = Path.Combine(dstDir, fileName);
+            File.WriteAllText(target, newContent);
+            return new StagedCopy(dstDir, target);
+        }
+        catch
+        {
+            TryDelete(dstDir);
+            throw;
+        }
+    }
+
+    /// <summary>A staged copy of a project; see <see cref="Stage"/>.</summary>
+    public sealed class StagedCopy(string dir, string file) : IDisposable
+    {
+        /// <summary>The directory holding the copy.</summary>
+        public string Dir { get; } = dir;
+
+        /// <summary>The file that was overwritten.</summary>
+        public string File { get; } = file;
+
+        /// <summary>
+        /// Deletes the copy. Never throws: an exception here would replace the one that failed the
+        /// test, and whatever is left the next run's sweep removes with the rest of this run.
+        /// </summary>
+        public void Dispose() => TryDelete(Dir);
+    }
+
+    /// <summary>
+    /// Where staging goes: <c>ORBION_SEXPR_SCRATCH</c>, or <c>~/.cache/sexpr-roundtrip</c>.
+    /// </summary>
+    /// <remarks>
+    /// MEASURED: kicad-cli here is a flatpak, and <c>--filesystem=host</c> does NOT expose /tmp --
+    /// the sandbox has its own. Staging under $HOME (or ORBION_SEXPR_SCRATCH) is visible to both.
+    /// </remarks>
+    public static string ScratchRoot =>
+        Environment.GetEnvironmentVariable("ORBION_SEXPR_SCRATCH")
+        ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache", "sexpr-roundtrip");
+
+    /// <summary>This run's own directory under <see cref="ScratchRoot"/>, created on first use.</summary>
+    private static readonly Lazy<string> RunScratch = new(CreateRunScratch);
+
+    private const string RunPrefix = "run-";
+
+    private static string CreateRunScratch()
+    {
+        var root = ScratchRoot;
+        Directory.CreateDirectory(root);
+        SweepAbandonedRuns(root);
+
+        var dir = Path.Combine(root, RunPrefix + Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        Directory.CreateDirectory(dir);
+
+        // A run that ends normally removes its own directory; one that is killed leaves it for the
+        // next run's sweep.
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => TryDelete(dir);
+        return dir;
+    }
+
+    /// <summary>
+    /// Deletes every <c>run-&lt;pid&gt;</c> directory under <paramref name="root"/> whose process no
+    /// longer exists: what a run that was killed, or crashed, could not delete itself.
+    /// </summary>
+    /// <param name="root">The scratch root to sweep.</param>
+    /// <returns>The directories deleted.</returns>
+    /// <remarks>
+    /// Only this layout is touched. A directory with a live process behind it is left alone even if
+    /// that process is not a test run -- a reused PID costs a leftover, never another run's files --
+    /// and anything not named <c>run-&lt;pid&gt;</c>, such as the bare GUID directories older
+    /// versions of this class staged straight into the root, is not this sweep's to judge.
+    /// </remarks>
+    public static IReadOnlyList<string> SweepAbandonedRuns(string root)
+    {
+        var deleted = new List<string>();
+        foreach (var dir in Directory.GetDirectories(root, RunPrefix + "*"))
+        {
+            var name = Path.GetFileName(dir);
+            if (!int.TryParse(name.AsSpan(RunPrefix.Length), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var pid)
+                || pid == Environment.ProcessId
+                || IsRunning(pid))
+            {
+                continue;
+            }
+
+            if (TryDelete(dir))
+            {
+                deleted.Add(dir);
+            }
         }
 
-        var target = Path.Combine(dstDir, Path.GetFileName(relative));
-        File.WriteAllText(target, newContent);
-        return (dstDir, target);
+        return deleted;
+    }
+
+    private static bool IsRunning(int pid)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            return !process.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryDelete(string dir)
+    {
+        try
+        {
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+
+            return true;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     /// <summary>

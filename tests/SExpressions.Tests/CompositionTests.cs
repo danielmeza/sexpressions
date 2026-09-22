@@ -278,7 +278,9 @@ public class CompositionTests
     // ----------------------------------------------------------------------- the real corpus
 
     /// <summary>
-    /// The realistic case, on the 170 001-byte schematic the defect was reported against.
+    /// The realistic case, on the schematic the defect was reported against. It was 170 001 bytes
+    /// then, and the corpus has changed it since, so the test no longer pins the file's size. It
+    /// checks the file for what the assertions rely on, and pins the insertion byte for byte.
     /// </summary>
     /// <remarks>
     /// MEASURED, same file and same insert, three versions of this library:
@@ -301,9 +303,19 @@ public class CompositionTests
 
         const string Relative = "templates/orbion-rs485-bridge/orbion-rs485-bridge.kicad_sch";
         var src = Corpus.Read(Relative);
-        Assert.Equal(170_001, src.Length);
 
+        // What the assertions below rely on: a large schematic whose last root child sits behind
+        // "\n\t" -- the separator the appended wire copies -- and whose closer has its own line.
         var document = SDocument.Parse(src);
+        Assert.Equal("kicad_sch", document.Root!.Token);
+        Assert.True(src.Length > 100_000, $"expected a large schematic, got {src.Length} bytes");
+        var last = document.Root.Children[^1].SourceSpan.ToString();
+        var lastAt = src.LastIndexOf(last, StringComparison.Ordinal);
+        Assert.EndsWith("\n\t", src[..lastAt], StringComparison.Ordinal);
+        Assert.False(src[..lastAt].EndsWith("\t\t", StringComparison.Ordinal));
+        Assert.Contains("\n\t(sheet_instances\n", src, StringComparison.Ordinal);
+        Assert.EndsWith("\n)\n", src, StringComparison.Ordinal);
+
         var wire = document.Root!.CreateChild("wire");
         var pts = wire.CreateChild("pts");
         pts.CreateChild("xy", "100", "100");
@@ -315,6 +327,11 @@ public class CompositionTests
 
         Assert.Equal(7, inserted.Count(c => c == '\n'));
         Assert.Equal(src.Length + inserted.Length, after.Length);
+
+        // The insertion, whole: the wire behind the one separator it needs, just before the closer.
+        const string Wire = "\n\t(wire\n\t\t(pts\n\t\t\t(xy 100 100)\n\t\t\t(xy 120 100)\n\t\t)\n\t\t(uuid \"00000000-0000-0000-0000-0000000000ff\")\n\t)";
+        Assert.Equal(Wire.Length, inserted.Length);
+        Assert.Equal(src[..^3] + Wire + "\n)\n", after);
         Assert.Contains("\n\t(wire\n\t\t(pts\n\t\t\t(xy 100 100)\n", after, StringComparison.Ordinal);
 
         // The line the wire was appended after, and the root's closer, are exactly as they were.
@@ -411,19 +428,11 @@ public class CompositionTests
         var composed = document.ToText();
         Assert.Contains("(italic no))", composed, StringComparison.Ordinal);
 
-        var baseline = Corpus.Stage(Relative, src);
-        var candidate = Corpus.Stage(Relative, composed);
-        try
-        {
-            var expected = Netlist(baseline.File, baseline.Dir);
-            Assert.True(expected.Length > 20_000, $"the baseline netlist is only {expected.Length} chars; this would prove nothing");
-            Assert.Equal(expected, Netlist(candidate.File, candidate.Dir));
-        }
-        finally
-        {
-            Directory.Delete(baseline.Dir, recursive: true);
-            Directory.Delete(candidate.Dir, recursive: true);
-        }
+        using var baseline = Corpus.Stage(Relative, src);
+        using var candidate = Corpus.Stage(Relative, composed);
+        var expected = Netlist(baseline.File, baseline.Dir);
+        Assert.True(expected.Length > 20_000, $"the baseline netlist is only {expected.Length} chars; this would prove nothing");
+        Assert.Equal(expected, Netlist(candidate.File, candidate.Dir));
     }
 
     // ------------------------------------------------------------------------------- helpers
