@@ -21,6 +21,11 @@ namespace SExpressions.Tests;
 /// </list>
 /// </para>
 /// <para>
+/// Since #36 a new row in a table whose rows stand on one line is written on one line too, so the
+/// tests on <see cref="TwoSpaceTable"/> and <see cref="TabTable"/> pin the indentation of that one
+/// line, and the tests on a table with no row to follow pin every line of a multi-line row.
+/// </para>
+/// <para>
 /// Assertions are on whole texts. Re-parsing proves nothing about layout, which is the property
 /// under test.
 /// </para>
@@ -42,6 +47,12 @@ public class IndentationTests
         + "\t(lib (name \"4xxx\") (type \"KiCad\") (uri \"${KICAD10_SYMBOL_DIR}/4xxx.kicad_sym\") (options \"\") (descr \"4xxx series symbols\"))\n"
         + "\t(lib (name \"Local\") (type \"KiCad\") (uri \"${KIPRJMOD}/Local.kicad_sym\") (options \"\") (descr \"\"))\n"
         + ")\n";
+
+    /// <summary>A two-space table with no row yet: nothing in it says how a row is shaped.</summary>
+    private const string TwoSpaceHeader = "(sym_lib_table\n  (version 7)\n)\n";
+
+    /// <summary>A KiCad 10 table with no row yet.</summary>
+    private const string TabHeader = "(sym_lib_table\n\t(version 7)\n)\n";
 
     /// <summary>A symbol library in the KiCad 6 and 7 format: two spaces, short forms kept on their parent's line.</summary>
     private const string TwoSpaceLibrary =
@@ -80,7 +91,7 @@ public class IndentationTests
         var document = SDocument.Parse(TwoSpaceTable);
         document.Root!.AddChild(Row("Imported"));
 
-        Assert.Equal(BeforeClose(TwoSpaceTable, RowText("  ", "  ", "Imported") + "\n"), document.ToText());
+        Assert.Equal(BeforeClose(TwoSpaceTable, RowLine("  ", "", "Imported") + "\n"), document.ToText());
     }
 
     [Fact]
@@ -90,7 +101,7 @@ public class IndentationTests
         root.AddChild(Row("Imported"));
 
         // The same text as through the document, less the file's trailing newline.
-        Assert.Equal(BeforeClose(TwoSpaceTable, RowText("  ", "  ", "Imported") + "\n").TrimEnd('\n'), root.ToText());
+        Assert.Equal(BeforeClose(TwoSpaceTable, RowLine("  ", "", "Imported") + "\n").TrimEnd('\n'), root.ToText());
     }
 
     [Fact]
@@ -99,7 +110,34 @@ public class IndentationTests
         var document = SDocument.Parse(TabTable);
         document.Root!.AddChild(Row("Imported"));
 
-        Assert.Equal(BeforeClose(TabTable, RowText("\t", "\t", "Imported") + "\n"), document.ToText());
+        Assert.Equal(BeforeClose(TabTable, RowLine("\t", " ", "Imported") + "\n"), document.ToText());
+    }
+
+    [Fact]
+    public void AppendingARow_ToATwoSpaceTableWithNoRowToFollow_IndentsEveryLineOfItWithTwoSpaces()
+    {
+        var document = SDocument.Parse(TwoSpaceHeader);
+        document.Root!.AddChild(Row("Imported"));
+
+        Assert.Equal(BeforeClose(TwoSpaceHeader, RowText("  ", "  ", "Imported") + "\n"), document.ToText());
+    }
+
+    [Fact]
+    public void AppendingARow_ToATwoSpaceTableWithNoRowToFollow_ThroughTheRootForm_IndentsEveryLineOfItWithTwoSpaces()
+    {
+        var root = SDocument.Parse(TwoSpaceHeader).Root!;
+        root.AddChild(Row("Imported"));
+
+        Assert.Equal(BeforeClose(TwoSpaceHeader, RowText("  ", "  ", "Imported") + "\n").TrimEnd('\n'), root.ToText());
+    }
+
+    [Fact]
+    public void AppendingARow_ToAKiCad10TableWithNoRowToFollow_IndentsEveryLineOfItWithTabs()
+    {
+        var document = SDocument.Parse(TabHeader);
+        document.Root!.AddChild(Row("Imported"));
+
+        Assert.Equal(BeforeClose(TabHeader, RowText("\t", "\t", "Imported") + "\n"), document.ToText());
     }
 
     // ------------------------------------------------------------ first, last, replaced, removed
@@ -111,7 +149,7 @@ public class IndentationTests
         document.Root!.Children.Insert(0, Row("First"));
 
         Assert.Equal(
-            "(sym_lib_table\n" + RowText("  ", "  ", "First") + "\n" + TwoSpaceTable["(sym_lib_table\n".Length..],
+            "(sym_lib_table\n" + RowLine("  ", "", "First") + "\n" + TwoSpaceTable["(sym_lib_table\n".Length..],
             document.ToText());
     }
 
@@ -124,9 +162,21 @@ public class IndentationTests
 
         var expected = TwoSpaceTable.Replace(
             "  (lib (name \"Local\")(type \"KiCad\")(uri \"${KIPRJMOD}/Local.kicad_sym\")(options \"\")(descr \"\"))",
-            RowText("  ", "  ", "Replaced"),
+            RowLine("  ", "", "Replaced"),
             StringComparison.Ordinal);
         Assert.Equal(expected, document.ToText());
+    }
+
+    [Fact]
+    public void ReplacingTheOnlyChild_LaysTheNewOneOutFromTheSlotItTook()
+    {
+        // No row is left to follow, so the new one is laid out one child per line -- from the
+        // slot it took, in the file's unit.
+        var document = SDocument.Parse(TwoSpaceHeader);
+        var children = document.Root!.Children;
+        children[0] = Row("Replaced");
+
+        Assert.Equal("(sym_lib_table\n" + RowText("  ", "  ", "Replaced") + "\n)\n", document.ToText());
     }
 
     [Fact]
@@ -401,12 +451,12 @@ public class IndentationTests
     [Fact]
     public void TheIndentOption_DoesNotOverrideTheIndentationTheFileAlreadyHas()
     {
-        var document = SDocument.Parse(TabTable);
+        var document = SDocument.Parse(TabHeader);
         document.Root!.AddChild(Row("Imported"));
 
         var text = document.ToText(new SExpressionWriterOptions { Indent = "    " });
 
-        Assert.Equal(BeforeClose(TabTable, RowText("\t", "\t", "Imported") + "\n"), text);
+        Assert.Equal(BeforeClose(TabHeader, RowText("\t", "\t", "Imported") + "\n"), text);
     }
 
     [Fact]
@@ -510,7 +560,11 @@ public class IndentationTests
         return row;
     }
 
-    /// <summary>A row from <see cref="Row"/> as it must come out at <paramref name="indent"/>, in <paramref name="unit"/>.</summary>
+    /// <summary>A row from <see cref="Row"/> on one line at <paramref name="indent"/>, with <paramref name="between"/> its fields, as the rows around it are (#36).</summary>
+    private static string RowLine(string indent, string between, string name) =>
+        $"{indent}(lib (name \"{name}\"){between}(type \"KiCad\"){between}(uri \"${{KIPRJMOD}}/{name}.kicad_sym\"){between}(options \"\"){between}(descr \"\"))";
+
+    /// <summary>A row from <see cref="Row"/> as it must come out one child per line at <paramref name="indent"/>, in <paramref name="unit"/>.</summary>
     private static string RowText(string indent, string unit, string name) =>
         $"{indent}(lib\n"
         + $"{indent}{unit}(name \"{name}\")\n"

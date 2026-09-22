@@ -20,7 +20,10 @@ Measured, not guessed. Each item below was reproduced against this build.
   `File.WriteAllText` does not write one back, so a 9-byte BOM'd file comes back as 6 bytes. KiCad
   never writes a BOM; other producers might.
 - **Line endings are only preserved in format-preserving mode.** Canonical output uses
-  `SExpressionWriterOptions.NewLine`, which defaults to `\n`; a CRLF file canonicalises to LF.
+  `SExpressionWriterOptions.NewLine`, which defaults to `\n`; a CRLF file canonicalises to LF. In
+  format-preserving mode a line break the writer has to format -- inside a new node, or after an
+  added comment -- is the file's own, read off the first line break in it, so a file with mixed
+  endings gets its first ending throughout the new text.
 - **`TryGetValue<bool>` does not understand KiCad's `yes` / `no`.** It is `bool.TryParse`, so it
   accepts `True`/`False` only. Use `GetValueAsBool`, which accepts `yes`, `true` and `1`.
   Symmetrically, `GetValueAsInt` / `GetValueAsDouble` / `GetValueAsBool` return `0`/`0.0`/`false`
