@@ -187,6 +187,12 @@ while (reader.Read())
 | `SkipForm()` | Walks past the current form's whole subtree, leaving the reader on its `EndForm`. |
 | `TryReadChild(token)` | Advances to the next direct child form with that token, skipping the rest. |
 
+Malformed text throws the same `SExpressionFormatException` the tree parser throws, with `Position`,
+`Line` and `Column` set to the same place the tree parser reports for the same text: the end of the
+input for a form left open, the stray `)`, the opening quote of an unterminated string, the `(` that
+goes past `MaxDepth`. Asserted for each case against `SDocument.Parse` in
+`ReaderTests.MalformedInput_ThrowsAtThePositionTheTreeParserReports`.
+
 ### What "zero allocation" means here
 
 **No allocation proportional to the input, not literally none.** The reader allocates nothing at all

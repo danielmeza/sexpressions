@@ -264,6 +264,48 @@ public class ReaderTests
         Assert.Contains(expected, ex.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The rows of issue #39: a malformed input is reported at the SAME position, line and column
+    /// the tree parser reports for it. The three are also asserted against literal values, so two
+    /// parsers that both said 0 could not pass by agreeing.
+    /// </summary>
+    [Theory]
+    [InlineData("(a", 2, 1, 3)]
+    [InlineData("(a))", 3, 1, 4)]
+    [InlineData("(a \"x)", 3, 1, 4)]
+    [InlineData("(kicad_pcb\n\t(version 1)\n\t(layers\n", 33, 4, 1)]
+    [InlineData("(a \"x\\\"y)", 3, 1, 4)] // unterminated on the escape path: reported at the opening quote too
+    public void MalformedInput_ThrowsAtThePositionTheTreeParserReports(string text, int position, int line, int column)
+    {
+        var tree = Assert.Throws<SExpressionFormatException>(() => SDocument.Parse(text));
+        var reader = Assert.Throws<SExpressionFormatException>(() => ReadAll(text, null));
+
+        Assert.Equal((position, line, column), (tree.Position, tree.Line, tree.Column));
+        Assert.Equal((position, line, column), (reader.Position, reader.Line, reader.Column));
+        Assert.EndsWith($" at line {line}, column {column} (offset {position}).", reader.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NestingDeeperThanMaxDepth_ThrowsAtTheOpeningParenTheTreeParserReports()
+    {
+        const string text = "(a (b (c)))";
+        var options = new SExpressionParserOptions { MaxDepth = 2 };
+
+        var tree = Assert.Throws<SExpressionFormatException>(() => new SExpressionParser(options).ParseAll(text));
+        var reader = Assert.Throws<SExpressionFormatException>(() => ReadAll(text, options));
+
+        Assert.Equal((6, 1, 7), (tree.Position, tree.Line, tree.Column));
+        Assert.Equal((6, 1, 7), (reader.Position, reader.Line, reader.Column));
+    }
+
+    private static void ReadAll(string text, SExpressionParserOptions? options)
+    {
+        var reader = new SExpressionReader(text, options);
+        while (reader.Read())
+        {
+        }
+    }
+
     [Fact]
     public void TryGetValue_ReadsNumbersAndKiCadBooleans()
     {

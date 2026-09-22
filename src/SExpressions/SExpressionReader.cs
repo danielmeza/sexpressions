@@ -151,7 +151,12 @@ namespace SExpressions
         /// Advances to the next token.
         /// </summary>
         /// <returns>False at the end of the input.</returns>
-        /// <exception cref="SExpressionFormatException">The text is not well formed.</exception>
+        /// <exception cref="SExpressionFormatException">
+        /// The text is not well formed. <see cref="SExpressionFormatException.Position"/>,
+        /// <see cref="SExpressionFormatException.Line"/> and <see cref="SExpressionFormatException.Column"/>
+        /// say where, and they are the same place <see cref="SExpressionParser"/> reports for the
+        /// same text.
+        /// </exception>
         public bool Read()
         {
             _valueIsEscaped = false;
@@ -162,7 +167,7 @@ namespace SExpressions
             {
                 if (_depth != 0)
                 {
-                    throw new SExpressionFormatException("Unexpected end of input; expected ')'");
+                    throw new SExpressionFormatException("Unexpected end of input; expected ')'", _text, _pos);
                 }
 
                 _tokenType = SExpressionTokenType.None;
@@ -185,7 +190,7 @@ namespace SExpressions
                 _depth++;
                 if (_depth > _maxDepth)
                 {
-                    throw new SExpressionFormatException($"Nesting deeper than {_maxDepth}");
+                    throw new SExpressionFormatException($"Nesting deeper than {_maxDepth}", _text, _tokenStart);
                 }
 
                 _tokenType = SExpressionTokenType.StartForm;
@@ -196,7 +201,7 @@ namespace SExpressions
             {
                 if (_depth == 0)
                 {
-                    throw new SExpressionFormatException("Unbalanced ')'");
+                    throw new SExpressionFormatException("Unbalanced ')'", _text, _tokenStart);
                 }
 
                 _pos++;
@@ -399,7 +404,7 @@ namespace SExpressions
             var rel = _text[contentStart..].IndexOfAny(SExpressionSyntax.QuoteOrEscape);
             if (rel < 0)
             {
-                throw new SExpressionFormatException("Unterminated quoted string");
+                throw new SExpressionFormatException("Unterminated quoted string", _text, _pos);
             }
 
             var i = contentStart + rel;
@@ -429,7 +434,7 @@ namespace SExpressions
                 i += _text[i] == '\\' && i + 1 < _text.Length ? 2 : 1;
             }
 
-            throw new SExpressionFormatException("Unterminated quoted string");
+            throw new SExpressionFormatException("Unterminated quoted string", _text, _pos);
         }
     }
 }
