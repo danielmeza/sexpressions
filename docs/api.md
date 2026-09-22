@@ -55,6 +55,22 @@ parent, so `SExpressionWriterOptions.Indent` only applies to `Canonical`, to a t
 and to a file that shows no indentation to follow. No line of a new node sits deeper than the
 sibling it lines up with, even in a file whose indentation does not match its nesting.
 
+**A new node is shaped like its nearest sibling of the same token.** When that sibling is still
+where the parser put it and stands on one line — every row of a library table, at every KiCad
+version — the new node is written on one line too, with the sibling's separators between its items:
+a space in a table KiCad 10 wrote, nothing at all in one KiCad 7 or 8 wrote, and single spaces inside
+any form nested in it. A `(lib …)` row appended to a KiCad 10 `sym-lib-table` is one line among its
+rows, where before it was laid out one child per line (#36). When the nearest such sibling spans
+lines, as nearly every form in a KiCad 10 schematic does, or there is none, the node is laid out one
+child per line as above. A node holding a comment, or a parsed form that spans lines, cannot stand
+on one line and is laid out one child per line whatever its siblings do.
+
+**A new node breaks its lines the way the file does.** The line ending is read off the first line
+break in the file, so a node added to a CRLF file is CRLF throughout, where before its first line
+break was copied from a sibling and every one inside it came from `SExpressionWriterOptions.NewLine`
+(#35). `NewLine`, like `Indent`, only applies to `Canonical`, to a tree built in memory, and to a
+file with no line break to follow.
+
 **A parsed node that moves keeps its bytes but not its old indentation.** Taken from another file,
 or from another depth of this one — a symbol out of a schematic's `lib_symbols` into a library, say —
 it is re-indented line by line onto where it now stands: its first line where its new siblings

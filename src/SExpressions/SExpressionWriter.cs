@@ -45,6 +45,12 @@ namespace SExpressions
         public string Indent { get; set; } = "\t";
 
         /// <summary>The line separator. Defaults to <c>\n</c>, which is what KiCad writes on every platform.</summary>
+        /// <remarks>
+        /// <see cref="SExpressionFormat.Canonical"/> always uses it. The format-preserving modes use
+        /// it only when the text being written shows no line break of its own to follow: a node
+        /// added to a parsed file breaks its lines the way that file already does, read off the
+        /// first line break in it, so a CRLF file stays CRLF throughout.
+        /// </remarks>
         public string NewLine { get; set; } = "\n";
 
         /// <summary>The character used to introduce a comment.</summary>
@@ -92,7 +98,7 @@ namespace SExpressions
         {
             ArgumentNullException.ThrowIfNull(expression);
             var sb = new StringBuilder(Capacity(expression));
-            var context = new WriteContext(sb, LayoutOf(expression), _options.Indent);
+            var context = new WriteContext(sb, LayoutOf(expression), _options);
             AppendIndent(sb, indentLevel);
 
             // A parsed form is laid out from the line it stands on in its own text, so that the lines
@@ -103,7 +109,7 @@ namespace SExpressions
             var verbatim = AppendNode(context, expression, indent, Rebase.Identity, leadingIndent: false);
             if (!verbatim)
             {
-                AppendNewLine(sb);
+                AppendNewLine(context);
             }
 
             return sb.ToString();
@@ -125,7 +131,7 @@ namespace SExpressions
             }
 
             var sb = new StringBuilder(Capacity(container));
-            var context = new WriteContext(sb, LayoutOf(container), _options.Indent);
+            var context = new WriteContext(sb, LayoutOf(container), _options);
 
             // The container is a synthetic node holding the top-level forms, not a form itself, so it
             // occupies no indent level: its children sit at the margin. Splicing it one level in put
@@ -274,6 +280,8 @@ namespace SExpressions
         /// whose indentation does not match their nesting, and files indented with spaces. A new
         /// node's first line copies a sibling's indentation, so every line below it has to start
         /// from that same text, in that file's unit, or it lands deeper than the sibling it copied.
+        /// A form built in memory is shaped like its nearest sibling of the same token, too: on one
+        /// line when that sibling stands on one line (see <see cref="TryAppendLikeSibling"/>).
         /// </remarks>
         private bool TrySplice(WriteContext context, SExpression e, Indent indent, Rebase rebase)
         {
@@ -366,8 +374,11 @@ namespace SExpressions
                 if (item.Kind == SItemKind.Expression)
                 {
                     var child = item.Expression!;
-                    var childRebase = IsInOriginalSlot(item, child, src) ? rebase : RebaseOnto(context, child, itemIndent);
-                    AppendNode(context, child, itemIndent, childRebase, leadingIndent: false);
+                    if (UsesSource(child) || !TryAppendLikeSibling(context, src, items, i, child))
+                    {
+                        var childRebase = IsInOriginalSlot(item, child, src) ? rebase : RebaseOnto(context, child, itemIndent);
+                        AppendNode(context, child, itemIndent, childRebase, leadingIndent: false);
+                    }
                 }
                 else if (item.RawValid)
                 {
@@ -423,7 +434,7 @@ namespace SExpressions
             // comment can put a sibling in that position; a parsed one already has its line break.
             if (previousWasComment)
             {
-                AppendNewLine(context.Builder);
+                AppendNewLine(context);
                 inline.AppendTo(context);
                 return inline;
             }
@@ -486,7 +497,7 @@ namespace SExpressions
 
             if (needsLine)
             {
-                AppendNewLine(sb);
+                AppendNewLine(context);
                 inline.AppendTo(context);
                 return inline;
             }
@@ -563,6 +574,205 @@ namespace SExpressions
         }
 
         /// <summary>
+        /// Writes a form built in memory the way its nearest sibling of the same token is written,
+        /// when that sibling is still where the parser put it and stands on one line: on one line,
+        /// with the sibling's separators between its items. Returns false when no such sibling
+        /// decides, or when the form cannot stand on one line, and the caller formats it as usual.
+        /// </summary>
+        /// <remarks>
+        /// KiCad writes every row of a library table on one line, and a row laid out one child per
+        /// line among them was the canonical formatter's shape, not the file's (#36). Only the
+        /// nearest sibling with the token decides -- the one that will follow, since that is the
+        /// slot the new form takes, or else the one behind it -- so a form whose siblings span
+        /// lines, as nearly every form in a KiCad 10 schematic does, keeps its one-child-per-line
+        /// layout. A sibling that was itself just added, or moved in from elsewhere, is not where a
+        /// parser put it and is passed over, as is one whose token was changed: the file's text
+        /// says nothing about that token.
+        /// </remarks>
+        private bool TryAppendLikeSibling(WriteContext context, string src, ReadOnlySpan<SItem> items, int index, SExpression e)
+        {
+            var template = OneLineTemplateFor(src, items, index, e.Token);
+            if (template is null || !CanStandOnOneLine(e))
+            {
+                return false;
+            }
+
+            AppendOnOneLine(context, e, template);
+            return true;
+        }
+
+        /// <summary>
+        /// The nearest sibling with <paramref name="token"/> that is still where the parser put it,
+        /// when it stands on one line; null when there is none or it spans lines.
+        /// </summary>
+        private static SExpression? OneLineTemplateFor(string src, ReadOnlySpan<SItem> items, int index, string token)
+        {
+            for (var i = index + 1; i < items.Length; i++)
+            {
+                if (IsParsedSiblingOf(items[i], src, token))
+                {
+                    return StandsOnOneLine(items[i].Expression!) ? items[i].Expression : null;
+                }
+            }
+
+            for (var i = index - 1; i >= 0; i--)
+            {
+                if (IsParsedSiblingOf(items[i], src, token))
+                {
+                    return StandsOnOneLine(items[i].Expression!) ? items[i].Expression : null;
+                }
+            }
+
+            return null;
+        }
+
+        private static bool IsParsedSiblingOf(in SItem item, string src, string token) =>
+            item.Kind == SItemKind.Expression
+            && item.Expression is { } sibling
+            && IsInOriginalSlot(item, sibling, src)
+            && !sibling.HeaderInvalid
+            && string.Equals(sibling.Token, token, StringComparison.Ordinal);
+
+        /// <summary>
+        /// True when a parsed form's text holds no line break and every item that still claims a
+        /// slot sits inside it, in order, so its separators can be read off item by item.
+        /// </summary>
+        private static bool StandsOnOneLine(SExpression e)
+        {
+            var src = e.Source!;
+            var start = e.SourceStart;
+            var end = start + e.SourceLength;
+            if (src.AsSpan(start, e.SourceLength).IndexOf('\n') >= 0)
+            {
+                return false;
+            }
+
+            var cursor = HeaderEnd(src, start, end);
+            foreach (var item in e.ItemsSpan)
+            {
+                if (!item.IsFromSource)
+                {
+                    continue;
+                }
+
+                if (item.SourceStart < cursor || item.SourceStart + item.SourceLength >= end)
+                {
+                    return false;
+                }
+
+                cursor = item.SourceStart + item.SourceLength;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// True when a form built in memory can be written on one line: it holds no comment, which
+        /// runs to the end of its line, and no parsed form that spans lines or was edited, whose
+        /// layout is its own. A form built in memory inside it is looked into.
+        /// </summary>
+        private bool CanStandOnOneLine(SExpression e)
+        {
+            foreach (var item in e.ItemsSpan)
+            {
+                if (item.Kind == SItemKind.Comment)
+                {
+                    return false;
+                }
+
+                if (item.Kind != SItemKind.Expression)
+                {
+                    continue;
+                }
+
+                var child = item.Expression!;
+                var fits = UsesSource(child)
+                    ? CanCopyVerbatim(child) && child.SourceSpan.IndexOf('\n') < 0
+                    : CanStandOnOneLine(child);
+                if (!fits)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Writes a form on one line. Between its items go <paramref name="template"/>'s separators,
+        /// read off the template item by item -- a space in a table KiCad 10 wrote, nothing in one
+        /// KiCad 7 wrote -- and the template's last separator again once it runs out of items. A
+        /// form nested in it, which the template says nothing about, gets single spaces, which is
+        /// how KiCad writes a form on one line at every version. A parsed form inside it is copied.
+        /// </summary>
+        private void AppendOnOneLine(WriteContext context, SExpression e, SExpression? template)
+        {
+            var sb = context.Builder;
+            sb.Append('(').Append(e.Token);
+
+            var src = template?.Source;
+            var templateItems = template is null ? default : template.ItemsSpan;
+            var next = 0;
+            var cursor = template is null ? 0 : HeaderEnd(src!, template.SourceStart, template.SourceStart + template.SourceLength);
+            var separatorStart = 0;
+            var separatorEnd = 0;
+            var found = false;
+            foreach (var item in e.ItemsSpan)
+            {
+                while (next < templateItems.Length && !templateItems[next].IsFromSource)
+                {
+                    next++;
+                }
+
+                if (next < templateItems.Length)
+                {
+                    separatorEnd = templateItems[next].SourceStart;
+                    separatorStart = SeparatorStart(src!, cursor, separatorEnd);
+                    cursor = separatorEnd + templateItems[next].SourceLength;
+                    found = true;
+                    next++;
+                }
+
+                // Two atoms with nothing between them fuse into one on re-parse, and so do the token
+                // and an atom behind it: an atom always gets at least the space that keeps it one.
+                if (!found || (separatorStart == separatorEnd && item.Kind == SItemKind.Atom))
+                {
+                    sb.Append(' ');
+                }
+                else
+                {
+                    sb.Append(src, separatorStart, separatorEnd - separatorStart);
+                }
+
+                if (item.Kind != SItemKind.Expression)
+                {
+                    AppendLeaf(item, sb);
+                    continue;
+                }
+
+                var child = item.Expression!;
+                if (UsesSource(child))
+                {
+                    sb.Append(child.Source, child.SourceStart, child.SourceLength);
+                }
+                else
+                {
+                    AppendOnOneLine(context, child, null);
+                }
+            }
+
+            if (template is not null)
+            {
+                // Whatever the template has in front of its closing paren, usually nothing.
+                var close = template.SourceStart + template.SourceLength - 1;
+                var from = SeparatorStart(src!, cursor, close);
+                sb.Append(src, from, close - from);
+            }
+
+            sb.Append(')');
+        }
+
+        /// <summary>
         /// How to re-base a node that is being written into a slot it was not parsed into. Identity
         /// when the line it started on in its own text is indented exactly like
         /// <paramref name="to"/>, in the same unit as the text it is joining -- a symbol moved
@@ -609,6 +819,32 @@ namespace SExpressions
             foreach (var item in node.ItemsSpan)
             {
                 if (item.Kind == SItemKind.Expression && InferUnit(item.Expression!) is { } found)
+                {
+                    return found;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// The line ending a tree's text uses, read off the first line break in it: <c>\r\n</c> when
+        /// a <c>\r</c> precedes that <c>\n</c>, else <c>\n</c>. A form built in memory carries no
+        /// evidence and is looked through, as for the unit. Null when nothing in the tree breaks a
+        /// line. A file with mixed endings has one ending as far as the writer is concerned.
+        /// </summary>
+        private static string? InferNewLine(SExpression node)
+        {
+            if (node.HasSource)
+            {
+                var span = node.SourceSpan;
+                var lineBreak = span.IndexOf('\n');
+                return lineBreak < 0 ? null : lineBreak > 0 && span[lineBreak - 1] == '\r' ? "\r\n" : "\n";
+            }
+
+            foreach (var item in node.ItemsSpan)
+            {
+                if (item.Kind == SItemKind.Expression && InferNewLine(item.Expression!) is { } found)
                 {
                     return found;
                 }
@@ -788,7 +1024,7 @@ namespace SExpressions
                 {
                     if (previousWasComment)
                     {
-                        AppendNewLine(sb);
+                        AppendNewLine(context);
                         inner.AppendTo(context);
                     }
                     else
@@ -801,14 +1037,14 @@ namespace SExpressions
                 }
                 else if (item.Kind == SItemKind.Comment)
                 {
-                    AppendNewLine(sb);
+                    AppendNewLine(context);
                     inner.AppendTo(context);
                     AppendLeaf(item, sb);
                     previousWasComment = true;
                 }
                 else
                 {
-                    AppendNewLine(sb);
+                    AppendNewLine(context);
                     var child = item.Expression!;
                     AppendNode(context, child, inner, RebaseOnto(context, child, inner), leadingIndent: true);
                     previousWasComment = false;
@@ -817,7 +1053,7 @@ namespace SExpressions
 
             if (multiline)
             {
-                AppendNewLine(sb);
+                AppendNewLine(context);
                 indent.AppendTo(context);
             }
 
@@ -832,7 +1068,7 @@ namespace SExpressions
             {
                 if (!first)
                 {
-                    AppendNewLine(sb);
+                    AppendNewLine(context);
                 }
 
                 first = false;
@@ -848,7 +1084,7 @@ namespace SExpressions
                 }
             }
 
-            AppendNewLine(sb);
+            AppendNewLine(context);
         }
 
         private void AppendLeaf(in SItem item, StringBuilder sb)
@@ -907,16 +1143,17 @@ namespace SExpressions
             }
         }
 
-        private void AppendNewLine(StringBuilder sb)
+        /// <summary>Breaks the line the way the text being written does; see <see cref="WriteContext.NewLine"/>.</summary>
+        private static void AppendNewLine(WriteContext context)
         {
-            var nl = _options.NewLine;
+            var nl = context.NewLine;
             if (nl.Length == 1)
             {
-                sb.Append(nl[0]);
+                context.Builder.Append(nl[0]);
                 return;
             }
 
-            sb.Append(nl);
+            context.Builder.Append(nl);
         }
 
         private static int Capacity(SExpression e) => e.HasSource ? e.SourceLength + 64 : 256;
@@ -930,20 +1167,21 @@ namespace SExpressions
             value.Length == 0 || value[0] == commentPrefix || value.AsSpan().ContainsAny(MustQuote);
 
         /// <summary>
-        /// The state of one write: the output, and the indentation unit of the text being written,
-        /// worked out once and only if something needs it.
+        /// The state of one write: the output, and the indentation unit and line ending of the text
+        /// being written, each worked out once and only if something needs it.
         /// </summary>
         private sealed class WriteContext
         {
             private readonly SExpression? _layout;
-            private readonly string _fallbackUnit;
+            private readonly SExpressionWriterOptions _fallback;
             private string? _unit;
+            private string? _newLine;
 
-            public WriteContext(StringBuilder builder, SExpression? layout, string fallbackUnit)
+            public WriteContext(StringBuilder builder, SExpression? layout, SExpressionWriterOptions fallback)
             {
                 Builder = builder;
                 _layout = layout;
-                _fallbackUnit = fallbackUnit;
+                _fallback = fallback;
             }
 
             public StringBuilder Builder { get; }
@@ -952,7 +1190,13 @@ namespace SExpressions
             /// One level of indentation in the text being written: the unit its own lines use, or
             /// <see cref="SExpressionWriterOptions.Indent"/> when it has none to go by.
             /// </summary>
-            public string Unit => _unit ??= (_layout is null ? null : InferUnit(_layout)) ?? _fallbackUnit;
+            public string Unit => _unit ??= (_layout is null ? null : InferUnit(_layout)) ?? _fallback.Indent;
+
+            /// <summary>
+            /// The line ending of the text being written: the one its own lines use, or
+            /// <see cref="SExpressionWriterOptions.NewLine"/> when it has none to go by.
+            /// </summary>
+            public string NewLine => _newLine ??= (_layout is null ? null : InferNewLine(_layout)) ?? _fallback.NewLine;
         }
 
         /// <summary>
