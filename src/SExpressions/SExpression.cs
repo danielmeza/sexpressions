@@ -19,6 +19,14 @@ namespace SExpressions
     /// <see cref="Values"/> and <see cref="Children"/> are live views over it, so a form written as
     /// <c>(a 1 (b) 2)</c> is written back as <c>(a 1 (b) 2)</c> and not as <c>(a 1 2 (b))</c>.
     /// </para>
+    /// <para>
+    /// A walk -- a <c>foreach</c> over a view, <see cref="GetChildren"/>, <see cref="Descendants"/>
+    /// or <see cref="Comments"/> -- visits what the form held when the walk started. The loop may
+    /// add, remove or move items of the form it is walking, and the walk neither skips nor
+    /// revisits any because of it; the next walk sees the form as it is then. <c>Count</c> and the
+    /// indexers stay live. An item replaced in place during the walk (an indexer, or
+    /// <see cref="SetValue(int, string, SQuoteStyle)"/>) may be visited as it was or as it is now.
+    /// </para>
     /// </remarks>
     public sealed class SExpression
     {
@@ -150,18 +158,19 @@ namespace SExpressions
         /// <summary>
         /// Gets the comments attached inside this form, in order, without their leading <c>#</c>.
         /// </summary>
+        /// <remarks>The comments are those the form held when the walk started; see <see cref="SExpression"/>.</remarks>
         public IEnumerable<string> Comments
         {
             get
             {
-                // Indexed rather than a foreach over ItemsSpan: this is an iterator, and the span
-                // would have to live across a yield.
-                for (var i = 0; i < ItemCount; i++)
+                // The window the walk starts with, and never re-read: see ItemArray.
+                var items = _items;
+                var end = _offset + ItemCount;
+                for (var i = _offset; i < end; i++)
                 {
-                    var item = ItemAt(i);
-                    if (item.Kind == SItemKind.Comment)
+                    if (items[i].Kind == SItemKind.Comment)
                     {
-                        yield return item.Text ?? string.Empty;
+                        yield return items[i].Text ?? string.Empty;
                     }
                 }
             }
@@ -193,9 +202,24 @@ namespace SExpressions
         internal int ItemCount => _countAndFlags >>> FlagShift;
 
         /// <summary>
-        /// One item by index. Exists for the iterator methods, where a <c>ref struct</c> local cannot
-        /// live across a <c>yield</c>.
+        /// The array this form's items sit in; they start at <see cref="ItemOffset"/> and run for
+        /// <see cref="ItemCount"/>. Read the three together, once, when a walk starts.
         /// </summary>
+        /// <remarks>
+        /// That window is the form as it was when the walk started, however the loop then changes the
+        /// form, and it costs no copy: every insert, removal or move copies the items into a new
+        /// array and never writes the old one again (see <see cref="InsertItem"/>). The one write that
+        /// lands in place is a replacement (<see cref="ReplaceItem"/>), which a walk that has not
+        /// reached it yet may see. Unlike <see cref="ItemsSpan"/>, the three can be held across a
+        /// <c>yield</c> -- and as an array and two ints, not a segment and its enumerator, they keep
+        /// every iterator object as small as it was.
+        /// </remarks>
+        internal SItem[] ItemArray => _items;
+
+        /// <summary>Where this form's items start in <see cref="ItemArray"/>.</summary>
+        internal int ItemOffset => _offset;
+
+        /// <summary>One item by index, read live.</summary>
         internal SItem ItemAt(int index) => _items[_offset + index];
 
         /// <summary>True when the source text of this form's <c>(token</c> is stale and cannot be copied.</summary>
@@ -280,14 +304,20 @@ namespace SExpressions
         /// </summary>
         /// <param name="token">The token to search for.</param>
         /// <returns>An enumerable of matching child expressions.</returns>
+        /// <remarks>
+        /// A walk visits the children the form held when it started, so it may move or remove them:
+        /// <c>foreach (var s in a.GetChildren("symbol")) b.AddChild(s)</c> moves every one.
+        /// </remarks>
         public IEnumerable<SExpression> GetChildren(string token)
         {
-            for (var i = 0; i < ItemCount; i++)
+            var items = _items;
+            var end = _offset + ItemCount;
+            for (var i = _offset; i < end; i++)
             {
-                var item = ItemAt(i);
-                if (item.Kind == SItemKind.Expression && string.Equals(item.Expression!.Token, token, StringComparison.Ordinal))
+                var child = items[i].Expression;
+                if (child is not null && string.Equals(child.Token, token, StringComparison.Ordinal))
                 {
-                    yield return item.Expression;
+                    yield return child;
                 }
             }
         }
@@ -330,25 +360,55 @@ namespace SExpressions
         /// </summary>
         /// <param name="token">When given, only forms with this token are returned.</param>
         /// <returns>The matching descendants.</returns>
+        /// <remarks>
+        /// Each form's children are the ones it held when the walk reached it; see
+        /// <see cref="SExpression"/>.
+        /// </remarks>
         public IEnumerable<SExpression> Descendants(string? token = null)
         {
-            for (var i = 0; i < ItemCount; i++)
+            // One iterator for the whole walk, holding the forms above the current one as a stack of
+            // windows, rather than one nested iterator per form: a recursive walk allocated an
+            // iterator for every form it visited, and a window per iterator (see ItemArray) would
+            // have made each of those larger still. The order is the same, depth first, a form before
+            // what it holds, and each form's window is taken when the walk goes into it.
+            Stack<(SItem[] Items, int Next, int End)>? above = null;
+            var items = _items;
+            var i = _offset;
+            var end = _offset + ItemCount;
+            while (true)
             {
-                var item = ItemAt(i);
-                if (item.Kind != SItemKind.Expression)
+                if (i == end)
+                {
+                    if (above is null || above.Count == 0)
+                    {
+                        yield break;
+                    }
+
+                    (items, i, end) = above.Pop();
+                    continue;
+                }
+
+                var child = items[i++].Expression;
+                if (child is null)
                 {
                     continue;
                 }
 
-                var child = item.Expression!;
                 if (token is null || string.Equals(child.Token, token, StringComparison.Ordinal))
                 {
                     yield return child;
                 }
 
-                foreach (var d in child.Descendants(token))
+                // A form that holds no form -- (at 1 2), (uuid "...") -- has nothing to walk into, and
+                // most forms in a KiCad file are one; skipping them keeps a shallow walk from
+                // allocating the stack at all.
+                if (child.HoldsAForm())
                 {
-                    yield return d;
+                    above ??= new Stack<(SItem[] Items, int Next, int End)>();
+                    above.Push((items, i, end));
+                    items = child._items;
+                    i = child._offset;
+                    end = i + child.ItemCount;
                 }
             }
         }
@@ -613,6 +673,9 @@ namespace SExpressions
         /// that form. A child of this form moves to the end, and if it is already the last item
         /// nothing changes. Add <see cref="Clone"/> to keep the original where it is.
         /// </remarks>
+        /// <exception cref="InvalidOperationException">
+        /// <paramref name="child"/> is this form, or a form this one is nested in.
+        /// </exception>
         public void AddChild(SExpression child)
         {
             ArgumentNullException.ThrowIfNull(child);
@@ -737,6 +800,20 @@ namespace SExpressions
 
         // ------------------------------------------------------------------------- item plumbing
 
+        /// <summary>True when at least one of this form's items is a form.</summary>
+        private bool HoldsAForm()
+        {
+            foreach (var item in ItemsSpan)
+            {
+                if (item.Kind == SItemKind.Expression)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         internal SExpression? GetFirstChild()
         {
             foreach (var item in ItemsSpan)
@@ -800,11 +877,22 @@ namespace SExpressions
         /// check ran first and <see cref="Attach"/> then took the child out of this same list, so an
         /// append was one past the end by the time the copy ran.
         /// </para>
+        /// <para>
+        /// The item is stored without the slot it may carry from a parse: an inserted item is never
+        /// where it was parsed, and its slot is an offset into text that is not, or no longer, the
+        /// text around it. Kept, it made the writer copy this form's source at those offsets -- an
+        /// atom from another document came out as whatever this one held there -- or, when it did
+        /// not fall in order, re-lay the whole form out.
+        /// </para>
         /// </remarks>
         internal void InsertItem(int index, SItem item)
         {
             ArgumentOutOfRangeException.ThrowIfNegative(index);
             ArgumentOutOfRangeException.ThrowIfGreaterThan(index, ItemCount);
+            if (item.Kind == SItemKind.Expression)
+            {
+                ThrowIfAncestorOrSelf(item.Expression!);
+            }
 
             if (item.Kind == SItemKind.Expression && ReferenceEquals(item.Expression!._parent, this))
             {
@@ -817,6 +905,7 @@ namespace SExpressions
             }
 
             Attach(item);
+            item = item.WithoutSlot();
 
             var current = ItemsSpan;
             var next = new SItem[ItemCount + 1];
@@ -853,33 +942,38 @@ namespace SExpressions
         /// Inserts a child form among this form's children: the owner's half of
         /// <see cref="SChildCollection.Insert"/>.
         /// </summary>
-        /// <param name="childIndex">
-        /// A position among the child forms. Anything past the last child, and (as before) anything
-        /// negative, means after every item this form holds.
+        /// <param name="index">
+        /// A position among the child forms, from 0 to their count. The count means after every item
+        /// this form holds.
         /// </param>
         /// <param name="child">The form to insert.</param>
         /// <remarks>
-        /// A child this form already holds is moved. <paramref name="childIndex"/> is the child
-        /// index it ends up at, read among the children without it, and when that is the index it
-        /// already has, nothing changes. Otherwise it lands exactly where a new form inserted at
-        /// <paramref name="childIndex"/> into that list would: just in front of the child that will
-        /// follow it, or after every item when it becomes the last child.
+        /// A child this form already holds is moved. <paramref name="index"/> is the child index it
+        /// ends up at, read among the children without it, and when that is the index it already
+        /// has, nothing changes. Otherwise it lands exactly where a new form inserted at
+        /// <paramref name="index"/> into that list would: just in front of the child that will follow
+        /// it, or after every item when it becomes the last child. <paramref name="index"/> is checked
+        /// against the children as the caller sees them, the same range for either kind of form.
         /// </remarks>
-        internal void InsertChild(int childIndex, SExpression child)
+        internal void InsertChild(int index, SExpression child)
         {
             ArgumentNullException.ThrowIfNull(child);
+            var count = CountOf(SItemKind.Expression);
+            ArgumentOutOfRangeException.ThrowIfNegative(index);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(index, count);
+
             var from = ReferenceEquals(child._parent, this) ? ItemIndexOf(child) : -1;
             if (from < 0)
             {
-                var at = ItemIndexOfChild(childIndex, skip: null);
-                InsertItem(at < 0 ? ItemCount : at, SItem.CreateExpression(child));
+                var at = index < count ? ItemIndexOfChild(index, skip: null) : ItemCount;
+                InsertItem(at, SItem.CreateExpression(child));
                 return;
             }
 
             // Every position below is read in the list without the child, which is also the list
             // MoveItem's destination index is read in.
-            var others = CountOf(SItemKind.Expression) - 1;
-            var target = childIndex >= 0 && childIndex < others ? childIndex : others;
+            var others = count - 1;
+            var target = Math.Min(index, others);
             if (target == ChildIndexAt(from))
             {
                 return;
@@ -891,6 +985,16 @@ namespace SExpressions
 
         internal void ReplaceItem(int index, SItem item)
         {
+            // Checked here, not left to the array: a parsed form's items are a slice of a block its
+            // whole document shares, so an index outside the slice is still inside the array, and
+            // the write below would land in a neighbouring form's item.
+            ArgumentOutOfRangeException.ThrowIfNegative(index);
+            ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, ItemCount);
+            if (item.Kind == SItemKind.Expression)
+            {
+                ThrowIfAncestorOrSelf(item.Expression!);
+            }
+
             var old = _items[_offset + index];
             if (old.RawValid && old == item)
             {
@@ -917,8 +1021,10 @@ namespace SExpressions
 
             // Written straight into the block: the slot belongs to this form and to no other, so a
             // replace needs no copy out of it. Keep the old item's slot so the writer can still
-            // splice the whitespace around it and change nothing but this one atom.
-            _items[_offset + index] = old.IsFromSource ? item.InSlotOf(old) : item;
+            // splice the whitespace around it and change nothing but this one atom. The new item's
+            // own slot, if a parse gave it one, is never kept: it points into other text (see
+            // InsertItem).
+            _items[_offset + index] = old.IsFromSource ? item.InSlotOf(old) : item.WithoutSlot();
             MarkDirty();
         }
 
@@ -973,6 +1079,30 @@ namespace SExpressions
             if (item.Kind == SItemKind.Expression && ReferenceEquals(item.Expression!._parent, this))
             {
                 item.Expression._parent = null;
+            }
+        }
+
+        /// <summary>
+        /// Refuses <paramref name="form"/> when it is this form or one this form is nested in. Put
+        /// here, it would contain itself: the parent chain becomes a loop, the form leaves its
+        /// document, and every walk of the tree -- <see cref="ToText()"/> first -- recurses until the
+        /// stack overflows, which no caller can catch.
+        /// </summary>
+        /// <param name="form">The form about to be placed in this one.</param>
+        /// <exception cref="InvalidOperationException">It is this form, or one of its ancestors.</exception>
+        /// <remarks>
+        /// Checked before anything moves. One walk up the parent chain: O(depth), and the parser
+        /// already caps the depth of what it builds at <see cref="SExpressionParserOptions.MaxDepth"/>.
+        /// </remarks>
+        internal void ThrowIfAncestorOrSelf(SExpression form)
+        {
+            for (var node = this; node is not null; node = node._parent)
+            {
+                if (ReferenceEquals(node, form))
+                {
+                    throw new InvalidOperationException(
+                        $"({form.Token}) cannot be added to itself or to a form nested inside it.");
+                }
             }
         }
 

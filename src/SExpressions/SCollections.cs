@@ -32,6 +32,12 @@ namespace SExpressions
 
         /// <summary>Gets or sets the item at <paramref name="index"/>.</summary>
         /// <param name="index">The item index.</param>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// <paramref name="index"/> is negative, or not less than <see cref="Count"/>.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Setting it to a form that is this form, or one it is nested in.
+        /// </exception>
         /// <remarks>
         /// Setting a child form that is already an item of this form moves it into the place of the
         /// item at <paramref name="index"/>, which leaves the tree; the list is then one item shorter,
@@ -50,11 +56,20 @@ namespace SExpressions
         /// A child form of this same form moves to the end, and nothing changes if it is already the
         /// last item. See <see cref="Insert"/>.
         /// </remarks>
+        /// <exception cref="InvalidOperationException">
+        /// <paramref name="item"/> holds this form, or a form it is nested in.
+        /// </exception>
         public void Add(SItem item) => Owner.InsertItem(Owner.ItemCount, item);
 
         /// <summary>Inserts an item at <paramref name="index"/>.</summary>
         /// <param name="index">From 0 to <see cref="Count"/>.</param>
         /// <param name="item">The item. A child form moves out of wherever it was.</param>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// <paramref name="index"/> is negative or greater than <see cref="Count"/>.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// <paramref name="item"/> holds this form, or a form it is nested in.
+        /// </exception>
         /// <remarks>
         /// <para>
         /// A child form belongs to one form at a time, so inserting one that another form holds, in
@@ -73,6 +88,11 @@ namespace SExpressions
         /// A moved form is written as one moved in from another form would be: the whitespace in
         /// front of it goes with it, the separator where it lands is copied from its new neighbours,
         /// and its own text is untouched.
+        /// </para>
+        /// <para>
+        /// An item taken from a parse -- this document's or another's -- is written from what it
+        /// holds, not from where it was parsed: its atom or comment text, and the quoting it arrived
+        /// with, behind a separator copied from its new neighbours.
         /// </para>
         /// </remarks>
         public void Insert(int index, SItem item) => Owner.InsertItem(index, item);
@@ -111,8 +131,17 @@ namespace SExpressions
             return true;
         }
 
-        /// <inheritdoc />
-        public IEnumerator<SItem> GetEnumerator() => Enumerate(Owner).GetEnumerator();
+        /// <summary>Walks the items the form holds at the moment this is called.</summary>
+        /// <returns>An enumerator over those items.</returns>
+        /// <remarks>
+        /// The loop may add, remove or move items; the walk still visits each item that was there
+        /// when it started, once, in order. See <see cref="SExpression"/>.
+        /// </remarks>
+        public IEnumerator<SItem> GetEnumerator()
+        {
+            var owner = Owner;
+            return Walk(owner.ItemArray, owner.ItemOffset, owner.ItemCount);
+        }
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
@@ -120,11 +149,12 @@ namespace SExpressions
         /// <returns>The span.</returns>
         public ReadOnlySpan<SItem> AsSpan() => Owner.ItemsSpan;
 
-        private static IEnumerable<SItem> Enumerate(SExpression owner)
+        private static IEnumerator<SItem> Walk(SItem[] items, int start, int count)
         {
-            for (var i = 0; i < owner.ItemCount; i++)
+            var end = start + count;
+            for (var i = start; i < end; i++)
             {
-                yield return owner.ItemAt(i);
+                yield return items[i];
             }
         }
     }
@@ -180,10 +210,19 @@ namespace SExpressions
             }
         }
 
-        /// <inheritdoc />
+        /// <summary>Inserts an atom at <paramref name="index"/> among the atoms.</summary>
+        /// <param name="index">
+        /// From 0 to <see cref="Count"/>. <see cref="Count"/> puts the atom right after the last
+        /// atom, as <see cref="Add(string)"/> does.
+        /// </param>
+        /// <param name="item">The atom text.</param>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// <paramref name="index"/> is negative or greater than <see cref="Count"/>.
+        /// </exception>
         public void Insert(int index, string item)
         {
             ArgumentOutOfRangeException.ThrowIfNegative(index);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(index, Count);
             var itemIndex = ItemIndexOf(index);
             if (itemIndex < 0)
             {
@@ -266,19 +305,28 @@ namespace SExpressions
             return true;
         }
 
-        /// <inheritdoc />
-        public IEnumerator<string> GetEnumerator() => Enumerate(Owner).GetEnumerator();
+        /// <summary>Walks the atoms the form holds at the moment this is called.</summary>
+        /// <returns>An enumerator over those atoms.</returns>
+        /// <remarks>
+        /// The loop may add or remove atoms, and <c>values.AddRange(values)</c> appends each atom
+        /// once. See <see cref="SExpression"/>.
+        /// </remarks>
+        public IEnumerator<string> GetEnumerator()
+        {
+            var owner = Owner;
+            return Walk(owner.ItemArray, owner.ItemOffset, owner.ItemCount);
+        }
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
-        private static IEnumerable<string> Enumerate(SExpression owner)
+        private static IEnumerator<string> Walk(SItem[] items, int start, int count)
         {
-            for (var n = 0; n < owner.ItemCount; n++)
+            var end = start + count;
+            for (var i = start; i < end; i++)
             {
-                var i = owner.ItemAt(n);
-                if (i.Kind == SItemKind.Atom)
+                if (items[i].Kind == SItemKind.Atom)
                 {
-                    yield return i.Text!;
+                    yield return items[i].Text!;
                 }
             }
         }
@@ -339,6 +387,9 @@ namespace SExpressions
         /// <c>[b, a]</c>, with <c>a</c> at index 1, and <c>this[0] = c</c> gives <c>[c, b]</c>.
         /// </para>
         /// </remarks>
+        /// <exception cref="InvalidOperationException">
+        /// Setting it to this form, or to a form it is nested in.
+        /// </exception>
         public SExpression this[int index]
         {
             get
@@ -365,6 +416,9 @@ namespace SExpressions
         /// A child of this same form moves to the end, and nothing changes if it is already the last
         /// item. See <see cref="SExpression.AddChild"/>.
         /// </remarks>
+        /// <exception cref="InvalidOperationException">
+        /// <paramref name="item"/> is this form, or a form it is nested in.
+        /// </exception>
         public void Add(SExpression item) => Owner.AddChild(item);
 
         /// <summary>Appends several child forms, in order, each moving out of wherever it was.</summary>
@@ -376,12 +430,25 @@ namespace SExpressions
         /// <c>other.Children.AddRange(node.Children)</c>, would otherwise skip some of them and, over
         /// this form's own children, visit some twice.
         /// </remarks>
+        /// <exception cref="InvalidOperationException">
+        /// One of <paramref name="items"/> is this form, or a form it is nested in. None has moved.
+        /// </exception>
         public void AddRange(IEnumerable<SExpression> items)
         {
             ArgumentNullException.ThrowIfNull(items);
-            foreach (var i in new List<SExpression>(items))
+            var owner = Owner;
+            var forms = new List<SExpression>(items);
+
+            // All of them checked before the first moves, so a refusal leaves everything in place.
+            foreach (var form in forms)
             {
-                Owner.AddChild(i);
+                ArgumentNullException.ThrowIfNull(form, nameof(items));
+                owner.ThrowIfAncestorOrSelf(form);
+            }
+
+            foreach (var form in forms)
+            {
+                owner.AddChild(form);
             }
         }
 
@@ -390,9 +457,16 @@ namespace SExpressions
         /// wherever it was.
         /// </summary>
         /// <param name="index">
-        /// A child index. Past the last child, the form goes after every item the form holds.
+        /// From 0 to <see cref="Count"/>. <see cref="Count"/> puts the form after every item the form
+        /// holds.
         /// </param>
         /// <param name="item">The form to insert.</param>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// <paramref name="index"/> is negative or greater than <see cref="Count"/>.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// <paramref name="item"/> is this form, or a form it is nested in.
+        /// </exception>
         /// <remarks>
         /// <para>
         /// A form belongs to one parent at a time, so one that another form holds, in this document
@@ -485,19 +559,28 @@ namespace SExpressions
             return true;
         }
 
-        /// <inheritdoc />
-        public IEnumerator<SExpression> GetEnumerator() => Enumerate(Owner).GetEnumerator();
+        /// <summary>Walks the child forms the form holds at the moment this is called.</summary>
+        /// <returns>An enumerator over those children.</returns>
+        /// <remarks>
+        /// The loop may move, remove or add children: <c>foreach (var c in a.Children) b.AddChild(c)</c>
+        /// moves every one. See <see cref="SExpression"/>.
+        /// </remarks>
+        public IEnumerator<SExpression> GetEnumerator()
+        {
+            var owner = Owner;
+            return Walk(owner.ItemArray, owner.ItemOffset, owner.ItemCount);
+        }
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
-        private static IEnumerable<SExpression> Enumerate(SExpression owner)
+        private static IEnumerator<SExpression> Walk(SItem[] items, int start, int count)
         {
-            for (var n = 0; n < owner.ItemCount; n++)
+            var end = start + count;
+            for (var i = start; i < end; i++)
             {
-                var i = owner.ItemAt(n);
-                if (i.Kind == SItemKind.Expression)
+                if (items[i].Expression is { } child)
                 {
-                    yield return i.Expression!;
+                    yield return child;
                 }
             }
         }
