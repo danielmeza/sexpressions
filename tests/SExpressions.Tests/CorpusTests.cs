@@ -58,6 +58,8 @@ public class CorpusTests
             }
         });
         Assert.StartsWith("Unexpected end of input", reader.Message, StringComparison.Ordinal);
+        Assert.Equal(text.Length, reader.Position);
+        Assert.Equal((tree.Line, tree.Column), (reader.Line, reader.Column));
 
         Assert.DoesNotContain(relative, Corpus.All());
     }

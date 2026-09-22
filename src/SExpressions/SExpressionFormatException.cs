@@ -29,10 +29,26 @@ namespace SExpressions
         }
 
         internal SExpressionFormatException(string message, string source, int position)
-            : base(Describe(message, source, position))
+            : this(message, source.AsSpan(), position)
+        {
+        }
+
+        /// <summary>
+        /// The constructor both parsers throw through. It takes a span because
+        /// <see cref="SExpressionReader"/> holds one, and it keeps only three ints: nothing here
+        /// holds on to the source.
+        /// </summary>
+        internal SExpressionFormatException(string message, ReadOnlySpan<char> source, int position)
+            : this(message, position, LineColumn(source, position))
+        {
+        }
+
+        private SExpressionFormatException(string message, int position, (int Line, int Column) at)
+            : base($"{message} at line {at.Line}, column {at.Column} (offset {position}).")
         {
             Position = position;
-            (Line, Column) = LineColumn(source, position);
+            Line = at.Line;
+            Column = at.Column;
         }
 
         /// <summary>Character offset in the source where parsing failed.</summary>
@@ -44,13 +60,7 @@ namespace SExpressions
         /// <summary>1-based column where parsing failed.</summary>
         public int Column { get; }
 
-        private static string Describe(string message, string source, int position)
-        {
-            var (line, column) = LineColumn(source, position);
-            return $"{message} at line {line}, column {column} (offset {position}).";
-        }
-
-        private static (int Line, int Column) LineColumn(string source, int position)
+        private static (int Line, int Column) LineColumn(ReadOnlySpan<char> source, int position)
         {
             var line = 1;
             var lineStart = 0;
