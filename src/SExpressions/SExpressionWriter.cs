@@ -34,7 +34,14 @@ namespace SExpressions
         /// <summary>How much of the original layout to keep. Defaults to <see cref="SExpressionFormat.Auto"/>.</summary>
         public SExpressionFormat Format { get; set; } = SExpressionFormat.Auto;
 
-        /// <summary>One level of indentation. Defaults to a tab, which is what KiCad writes.</summary>
+        /// <summary>
+        /// One level of indentation. Defaults to a tab, which is what KiCad writes.
+        /// </summary>
+        /// <remarks>
+        /// <see cref="SExpressionFormat.Canonical"/> always uses it. The format-preserving modes use
+        /// it only when the text being written shows no indentation of its own to follow: a node
+        /// added to a parsed file is indented the way that file already is, two spaces or a tab.
+        /// </remarks>
         public string Indent { get; set; } = "\t";
 
         /// <summary>The line separator. Defaults to <c>\n</c>, which is what KiCad writes on every platform.</summary>
@@ -85,7 +92,15 @@ namespace SExpressions
         {
             ArgumentNullException.ThrowIfNull(expression);
             var sb = new StringBuilder(Capacity(expression));
-            var verbatim = AppendNode(expression, sb, indentLevel, leadingIndent: true);
+            var context = new WriteContext(sb, LayoutOf(expression), _options.Indent);
+            AppendIndent(sb, indentLevel);
+
+            // A parsed form is laid out from the line it stands on in its own text, so that the lines
+            // it copies from that text and the lines it has to format agree with each other.
+            var indent = UsesSource(expression)
+                ? Indent.Copy(expression.Source!, LineIndentOf(expression.Source!, expression.SourceStart))
+                : Indent.OfLevels(indentLevel);
+            var verbatim = AppendNode(context, expression, indent, Rebase.Identity, leadingIndent: false);
             if (!verbatim)
             {
                 AppendNewLine(sb);
@@ -110,15 +125,16 @@ namespace SExpressions
             }
 
             var sb = new StringBuilder(Capacity(container));
+            var context = new WriteContext(sb, LayoutOf(container), _options.Indent);
 
-            // -1, not 0: the container is a synthetic node holding the top-level forms, not a form
-            // itself, so it occupies no indent level and its children are the level-0 forms. Splicing
-            // it at 0 put everything the writer had to re-format one indent deeper than the text
-            // around it -- invisible until a caller adds a node, and then wrong on every line of it.
-            if (!(CanSplice(container) && TrySplice(container, sb, -1)))
+            // The container is a synthetic node holding the top-level forms, not a form itself, so it
+            // occupies no indent level: its children sit at the margin. Splicing it one level in put
+            // everything the writer had to re-format one indent deeper than the text around it --
+            // invisible until a caller adds a node, and then wrong on every line of it.
+            if (!(CanSplice(container) && TrySplice(context, container, Indent.Margin, Rebase.Identity)))
             {
                 sb.Length = 0;
-                AppendDocumentCanonical(container, sb);
+                AppendDocumentCanonical(context, container);
             }
 
             return sb.ToString();
@@ -192,23 +208,33 @@ namespace SExpressions
         // ----------------------------------------------------------------------------- rendering
 
         /// <summary>Appends one node. Returns true when its text came out of the source rather than the formatter.</summary>
-        private bool AppendNode(SExpression e, StringBuilder sb, int level, bool leadingIndent)
+        /// <param name="context">The write in progress.</param>
+        /// <param name="e">The node.</param>
+        /// <param name="indent">Where the line this node stands on starts, in the output.</param>
+        /// <param name="rebase">How whitespace copied out of the node's source maps onto where it now stands.</param>
+        /// <param name="leadingIndent">Whether to write <paramref name="indent"/> in front of the node.</param>
+        private bool AppendNode(WriteContext context, SExpression e, Indent indent, Rebase rebase, bool leadingIndent)
         {
+            var sb = context.Builder;
             if (leadingIndent)
             {
-                AppendIndent(sb, level);
+                indent.AppendTo(context);
             }
 
-            if (CanCopyVerbatim(e))
+            if (CanCopyVerbatim(e) && rebase.IsIdentity)
             {
                 sb.Append(e.Source, e.SourceStart, e.SourceLength);
                 return true;
             }
 
-            if (CanSplice(e))
+            // An untouched node that now stands somewhere other than where it was parsed -- moved in
+            // from another file, or to another depth of this one -- has the right bytes but the
+            // indentation of the place it came from, so it is walked like an edited one and every
+            // line of it is re-based onto where it is now.
+            if (CanSplice(e) || CanCopyVerbatim(e))
             {
                 var mark = sb.Length;
-                if (TrySplice(e, sb, level))
+                if (TrySplice(context, e, indent, rebase))
                 {
                     return true;
                 }
@@ -216,7 +242,7 @@ namespace SExpressions
                 sb.Length = mark;
             }
 
-            AppendCanonical(e, sb, level);
+            AppendCanonical(context, e, indent);
             return false;
         }
 
@@ -227,6 +253,12 @@ namespace SExpressions
             _options.Format != SExpressionFormat.Canonical && e.HasSource && !e.HeaderInvalid
             && (e.ItemCount > 0 || e.ItemsChanged);
 
+        /// <summary>True when the writer takes this node's layout from its source rather than formatting it.</summary>
+        private bool UsesSource(SExpression e) => _options.Format != SExpressionFormat.Canonical && e.HasSource;
+
+        /// <summary>The tree whose text decides the indentation unit, or null when the options alone do.</summary>
+        private SExpression? LayoutOf(SExpression root) => _options.Format == SExpressionFormat.Canonical ? null : root;
+
         /// <summary>
         /// Rebuilds a changed form out of the source it came from. Each item that still holds its
         /// slot is written behind the whitespace that preceded it in the file, so the only bytes
@@ -236,8 +268,16 @@ namespace SExpressions
         /// touched: a sibling nobody edited keeps its bytes, its indentation and its line, and the
         /// closing paren keeps its column.
         /// </summary>
-        private bool TrySplice(SExpression e, StringBuilder sb, int level)
+        /// <remarks>
+        /// Every item is laid out from the line it actually starts on, read off the whitespace in
+        /// front of it, and not from how deep it is in the tree: KiCad's own generators write files
+        /// whose indentation does not match their nesting, and files indented with spaces. A new
+        /// node's first line copies a sibling's indentation, so every line below it has to start
+        /// from that same text, in that file's unit, or it lands deeper than the sibling it copied.
+        /// </remarks>
+        private bool TrySplice(WriteContext context, SExpression e, Indent indent, Rebase rebase)
         {
+            var sb = context.Builder;
             var src = e.Source!;
             var start = e.SourceStart;
             var end = start + e.SourceLength;
@@ -273,29 +313,61 @@ namespace SExpressions
 
             sb.Append(src, start, bodyStart - start);
 
+            // Where an item that does not start a line of its own is laid out from: one level in from
+            // this form -- or, for the container, which is not a form, the margin itself.
+            var inline = container ? indent : indent.Deeper;
+
+            // A form opens with its header, but the container opens with whatever whitespace starts
+            // the file, and that belongs to the file rather than to the item that happened to come
+            // first. Whatever is written first now starts behind it, and an item that used to open
+            // the file gets a separator of its own once something is put in front of it. Without
+            // this, removing or moving the first top-level form left the next one's line break at
+            // the top of the file (#31), and inserting in front of the first one fused the two.
+            var leadEnd = bodyStart;
+            while (container && leadEnd < bodyEnd && IsSeparator(src[leadEnd]))
+            {
+                leadEnd++;
+            }
+
+            // Text that is nothing but whitespace has no opening, only an ending, and the closing
+            // separator below already writes that.
+            if (leadEnd == bodyEnd)
+            {
+                leadEnd = bodyStart;
+            }
+
             cursor = bodyStart;
             var previousWasComment = false;
             for (var i = 0; i < items.Length; i++)
             {
                 var item = items[i];
-                int itemLevel;
-                if (item.IsFromSource)
+                Indent itemIndent;
+                if (container && i == 0)
+                {
+                    itemIndent = AppendSourceSeparator(context, src, bodyStart, leadEnd, previousWasComment, inline, rebase);
+                }
+                else if (item.IsFromSource && !(container && OpensTheFile(src, cursor, item, bodyStart)))
                 {
                     // Only the whitespace immediately in front of the item is its separator.
                     // Anything before that is the text of items that have since been removed, and
                     // copying it would put them back.
-                    AppendSourceSeparator(sb, src, SeparatorStart(src, cursor, item.SourceStart), item.SourceStart, previousWasComment, level + 1);
-                    cursor = item.SourceStart + item.SourceLength;
-                    itemLevel = level + 1;
+                    itemIndent = AppendSourceSeparator(context, src, SeparatorStart(src, cursor, item.SourceStart), item.SourceStart, previousWasComment, inline, rebase);
                 }
                 else
                 {
-                    itemLevel = AppendSynthesizedSeparator(sb, src, items, i, bodyStart, bodyEnd, previousWasComment, level + 1);
+                    itemIndent = AppendSynthesizedSeparator(context, src, items, i, bodyStart, bodyEnd, container, previousWasComment, inline, rebase);
+                }
+
+                if (item.IsFromSource)
+                {
+                    cursor = item.SourceStart + item.SourceLength;
                 }
 
                 if (item.Kind == SItemKind.Expression)
                 {
-                    AppendNode(item.Expression!, sb, itemLevel, leadingIndent: false);
+                    var child = item.Expression!;
+                    var childRebase = IsInOriginalSlot(item, child, src) ? rebase : RebaseOnto(context, child, itemIndent);
+                    AppendNode(context, child, itemIndent, childRebase, leadingIndent: false);
                 }
                 else if (item.RawValid)
                 {
@@ -309,7 +381,7 @@ namespace SExpressions
                 previousWasComment = item.Kind == SItemKind.Comment;
             }
 
-            AppendSourceSeparator(sb, src, SeparatorStart(src, cursor, bodyEnd), bodyEnd, previousWasComment, level);
+            AppendSourceSeparator(context, src, SeparatorStart(src, cursor, bodyEnd), bodyEnd, previousWasComment, indent, rebase);
             if (!container)
             {
                 sb.Append(')');
@@ -318,43 +390,92 @@ namespace SExpressions
             return true;
         }
 
-        /// <summary>Copies one separator out of the source, unaltered unless a comment forces a line break.</summary>
-        private void AppendSourceSeparator(StringBuilder sb, string src, int from, int to, bool previousWasComment, int level)
+        /// <summary>
+        /// True when nothing but whitespace stands between the start of the container's text and
+        /// this item: it was the first thing in the file, so the whitespace in front of it is the
+        /// file's own opening and not a separator between two items.
+        /// </summary>
+        private static bool OpensTheFile(string src, int cursor, in SItem item, int bodyStart) =>
+            SeparatorStart(src, cursor, item.SourceStart) == bodyStart;
+
+        /// <summary>
+        /// True when a child form is still the one the parser put in this slot of this text. Its
+        /// whitespace then already belongs where it stands; any other child -- inserted, moved in,
+        /// or put in the slot of the one it replaced -- has to be re-based onto it.
+        /// </summary>
+        private static bool IsInOriginalSlot(in SItem item, SExpression child, string src) =>
+            item.RawValid && ReferenceEquals(child.Source, src) && child.SourceStart == item.SourceStart;
+
+        /// <summary>
+        /// Copies one separator out of the source, unaltered unless a comment forces a line break or
+        /// the node is being re-based. Returns where the line the next item stands on starts.
+        /// </summary>
+        private Indent AppendSourceSeparator(WriteContext context, string src, int from, int to, bool previousWasComment, Indent inline, Rebase rebase)
         {
+            var lineBreak = src.AsSpan(from, to - from).LastIndexOf('\n');
+            if (lineBreak >= 0)
+            {
+                return AppendLineBreak(context, src, from, from + lineBreak + 1, to, rebase);
+            }
+
             // A comment runs to the end of its line, so whatever follows one has to start on the
             // next line or it is swallowed into the comment text on re-parse. Only a newly inserted
             // comment can put a sibling in that position; a parsed one already has its line break.
-            if (previousWasComment && src.AsSpan(from, to - from).IndexOf('\n') < 0)
+            if (previousWasComment)
             {
-                AppendNewLine(sb);
-                AppendIndent(sb, level);
-                return;
+                AppendNewLine(context.Builder);
+                inline.AppendTo(context);
+                return inline;
             }
 
-            sb.Append(src, from, to - from);
+            context.Builder.Append(src, from, to - from);
+            return inline;
+        }
+
+        /// <summary>
+        /// Writes a separator that breaks the line: everything up to and including its last line
+        /// break exactly as the source has it, then the new line's indentation -- copied as it is,
+        /// or mapped through <paramref name="rebase"/>. Returns where that line starts.
+        /// </summary>
+        private static Indent AppendLineBreak(WriteContext context, string src, int from, int lineStart, int to, Rebase rebase)
+        {
+            context.Builder.Append(src, from, lineStart - from);
+            if (rebase.IsIdentity)
+            {
+                context.Builder.Append(src, lineStart, to - lineStart);
+                return Indent.Copy(src, (lineStart, to - lineStart));
+            }
+
+            var indent = rebase.Map(context, src.AsSpan(lineStart, to - lineStart));
+            indent.AppendTo(context);
+            return indent;
         }
 
         /// <summary>
         /// Writes the whitespace a newly inserted item needs, taken from the separator its
         /// neighbours already use: the one in front of the sibling that will follow it, or -- when
-        /// it is being appended -- the one in front of the sibling it follows. Returns the indent
-        /// level that separator lands on, so a multi-line new item lines up with the file it is
-        /// joining rather than with the writer's own idea of the depth.
+        /// it is being appended -- the one in front of the sibling it follows. Returns where the line
+        /// the item stands on starts, so a multi-line new item lines up with the file it is joining
+        /// rather than with the writer's own idea of the depth.
         /// </summary>
-        private int AppendSynthesizedSeparator(
-            StringBuilder sb,
+        private Indent AppendSynthesizedSeparator(
+            WriteContext context,
             string src,
             ReadOnlySpan<SItem> items,
             int index,
             int bodyStart,
             int bodyEnd,
+            bool container,
             bool previousWasComment,
-            int level)
+            Indent inline,
+            Rebase rebase)
         {
-            var found = TryNeighbourSeparator(src, items, index, bodyStart, out var separator);
+            var sb = context.Builder;
+            var found = TryNeighbourSeparator(src, items, index, bodyStart, container, out var from, out var to);
+            var lineBreak = found ? src.AsSpan(from, to - from).LastIndexOf('\n') : -1;
 
             // A comment cannot be followed on its own line; see AppendSourceSeparator.
-            var needsLine = previousWasComment && (!found || separator.IndexOf('\n') < 0);
+            var needsLine = previousWasComment && lineBreak < 0;
 
             // A form with nothing in it yet has no separator to copy, so the only hint left is the
             // shape of the form itself: one already broken over lines stays broken, "(foo)" does not.
@@ -366,20 +487,25 @@ namespace SExpressions
             if (needsLine)
             {
                 AppendNewLine(sb);
-                AppendIndent(sb, level);
-                return level;
+                inline.AppendTo(context);
+                return inline;
             }
 
-            if (!found || separator.Length == 0)
+            if (!found || from == to)
             {
                 // Two items with nothing between them fuse into one atom on re-parse. This is the
                 // one byte an insert is always allowed: the separator that makes it an item at all.
                 sb.Append(' ');
-                return level;
+                return inline;
             }
 
-            sb.Append(separator);
-            return IndentLevelOf(separator, level);
+            if (lineBreak < 0)
+            {
+                sb.Append(src, from, to - from);
+                return inline;
+            }
+
+            return AppendLineBreak(context, src, from, from + lineBreak + 1, to, rebase);
         }
 
         /// <summary>
@@ -388,10 +514,14 @@ namespace SExpressions
         /// that will FOLLOW the new item is preferred over the one behind it, because that is the
         /// slot the new item is taking and the sibling then keeps its own bytes unchanged.
         /// </summary>
-        private static bool TryNeighbourSeparator(string src, ReadOnlySpan<SItem> items, int index, int bodyStart, out ReadOnlySpan<char> separator)
+        /// <remarks>
+        /// In the container, the whitespace in front of the item that opens the file is not a
+        /// separator between two items, so it is never copied: it is usually empty.
+        /// </remarks>
+        private static bool TryNeighbourSeparator(string src, ReadOnlySpan<SItem> items, int index, int bodyStart, bool container, out int from, out int to)
         {
             var kind = items[index].Kind;
-            if (TryNeighbourSeparator(src, items, index, bodyStart, kind, out separator))
+            if (TryNeighbourSeparator(src, items, index, bodyStart, container, kind, out from, out to))
             {
                 return true;
             }
@@ -400,72 +530,198 @@ namespace SExpressions
             // is how "(token value ...)" is written wherever this format is used. Falling through to
             // a child form's separator here would push it onto a line of its own.
             return kind != SItemKind.Atom
-                && TryNeighbourSeparator(src, items, index, bodyStart, null, out separator);
+                && TryNeighbourSeparator(src, items, index, bodyStart, container, null, out from, out to);
         }
 
-        private static bool TryNeighbourSeparator(string src, ReadOnlySpan<SItem> items, int index, int bodyStart, SItemKind? kind, out ReadOnlySpan<char> separator)
+        private static bool TryNeighbourSeparator(string src, ReadOnlySpan<SItem> items, int index, int bodyStart, bool container, SItemKind? kind, out int from, out int to)
         {
             for (var i = index + 1; i < items.Length; i++)
             {
-                if (Matches(items[i], kind))
+                if (Matches(items[i], kind) && !(container && OpensTheFile(src, bodyStart, items[i], bodyStart)))
                 {
-                    separator = Separator(src, bodyStart, items[i].SourceStart);
+                    to = items[i].SourceStart;
+                    from = SeparatorStart(src, bodyStart, to);
                     return true;
                 }
             }
 
             for (var i = index - 1; i >= 0; i--)
             {
-                if (Matches(items[i], kind))
+                if (Matches(items[i], kind) && !(container && OpensTheFile(src, bodyStart, items[i], bodyStart)))
                 {
-                    separator = Separator(src, bodyStart, items[i].SourceStart);
+                    to = items[i].SourceStart;
+                    from = SeparatorStart(src, bodyStart, to);
                     return true;
                 }
             }
 
-            separator = default;
+            from = to = 0;
             return false;
 
             static bool Matches(in SItem item, SItemKind? kind) =>
                 item.IsFromSource && (kind is null || item.Kind == kind.Value);
-
-            static ReadOnlySpan<char> Separator(string src, int bodyStart, int at)
-            {
-                var from = SeparatorStart(src, bodyStart, at);
-                return src.AsSpan(from, at - from);
-            }
         }
 
         /// <summary>
-        /// How many indent levels a separator ends on, or <paramref name="fallback"/> when its
-        /// indentation is not written in the unit this writer uses. Reading it off the file rather
-        /// than off the tree is what keeps a new node aligned with a document whose indentation does
-        /// not match its nesting -- KiCad's own generators emit several such files.
+        /// How to re-base a node that is being written into a slot it was not parsed into. Identity
+        /// when the line it started on in its own text is indented exactly like
+        /// <paramref name="to"/>, in the same unit as the text it is joining -- a symbol moved
+        /// between two libraries of the same style -- so that it still copies byte for byte.
         /// </summary>
-        private int IndentLevelOf(ReadOnlySpan<char> separator, int fallback)
+        private Rebase RebaseOnto(WriteContext context, SExpression node, Indent to)
         {
-            var lineStart = separator.LastIndexOf('\n');
-            if (lineStart < 0)
+            if (!UsesSource(node))
             {
-                return fallback;
+                // Formatted from the tree: nothing is copied, so there is nothing to map.
+                return Rebase.Identity;
             }
 
-            var indent = separator[(lineStart + 1)..];
-            var unit = _options.Indent;
-            if (unit.Length == 0 || indent.Length % unit.Length != 0)
+            var src = node.Source!;
+            var line = BaseIndentOf(node);
+            var unit = InferUnit(node);
+            if (to.Matches(src.AsSpan(line.Start, line.Length), context)
+                && (unit is null || string.Equals(unit, context.Unit, StringComparison.Ordinal)))
             {
-                return fallback;
+                return Rebase.Identity;
             }
 
-            for (var i = 0; i < indent.Length; i += unit.Length)
+            return new Rebase(src, line, unit, to);
+        }
+
+        /// <summary>
+        /// The unit a tree is indented in, read off its own text: how much further in than its
+        /// parent's line a child on a line of its own starts. The shallowest form that breaks a line
+        /// decides, and a form built in memory carries no evidence and is looked through. Null when
+        /// nothing in the tree is indented relative to its parent.
+        /// </summary>
+        /// <remarks>
+        /// Read off the tree's separators rather than off the raw lines, so a quoted atom that spans
+        /// lines -- whose continuation lines are its text, not indentation -- is never mistaken for
+        /// layout. It stops at the first form that answers, which in a KiCad file is the root.
+        /// </remarks>
+        private static string? InferUnit(SExpression node)
+        {
+            if (node.HasSource && UnitOf(node) is { } unit)
             {
-                if (!indent.Slice(i, unit.Length).SequenceEqual(unit))
+                return unit;
+            }
+
+            foreach (var item in node.ItemsSpan)
+            {
+                if (item.Kind == SItemKind.Expression && InferUnit(item.Expression!) is { } found)
                 {
-                    return fallback;
+                    return found;
                 }
             }
 
-            return indent.Length / unit.Length;
+            return null;
+        }
+
+        /// <summary>
+        /// The shortest step in from its own line that any child of this form on a line of its own
+        /// takes. The shortest, because KiCad 7 wrote some children one step further in than their
+        /// siblings, and the step between siblings is the unit.
+        /// </summary>
+        private static string? UnitOf(SExpression node)
+        {
+            var src = node.Source!;
+            var start = node.SourceStart;
+            var end = start + node.SourceLength;
+            var bodyStart = node.IsDocumentContainer ? start : HeaderEnd(src, start, end);
+            var line = BaseIndentOf(node);
+            var own = src.AsSpan(line.Start, line.Length);
+
+            var bestStart = -1;
+            var bestLength = int.MaxValue;
+            var cursor = bodyStart;
+            foreach (var item in node.ItemsSpan)
+            {
+                if (!item.IsFromSource)
+                {
+                    continue;
+                }
+
+                if (item.SourceStart < cursor || item.SourceStart > end)
+                {
+                    return null;
+                }
+
+                var from = SeparatorStart(src, cursor, item.SourceStart);
+                var lineBreak = src.AsSpan(from, item.SourceStart - from).LastIndexOf('\n');
+                if (lineBreak >= 0)
+                {
+                    var indentStart = from + lineBreak + 1;
+                    var indent = src.AsSpan(indentStart, item.SourceStart - indentStart);
+                    if (indent.Length > own.Length && indent.StartsWith(own) && indent.Length - own.Length < bestLength)
+                    {
+                        bestStart = indentStart + own.Length;
+                        bestLength = indent.Length - own.Length;
+                    }
+                }
+
+                cursor = item.SourceStart + item.SourceLength;
+            }
+
+            return bestStart < 0 ? null : src.Substring(bestStart, bestLength);
+        }
+
+        /// <summary>
+        /// The indentation a parsed form's own lines are measured from: that of the line its closing
+        /// paren stands on, when the paren starts a line, or else that of the line the form starts on.
+        /// The closing paren first, because a generator that pastes a block of text in writes the
+        /// block's first line wherever its cursor happened to be, while every other line of it -- the
+        /// closer included -- keeps the indentation it was written with. The corpus has such files:
+        /// a <c>lib_symbols</c> entry whose <c>(symbol</c> line is at one tab, its children at three
+        /// and its closer at two.
+        /// </summary>
+        private static (int Start, int Length) BaseIndentOf(SExpression node)
+        {
+            var src = node.Source!;
+            var start = node.SourceStart;
+            var close = start + node.SourceLength - 1;
+            if (!node.IsDocumentContainer && close > start && src[close] == ')')
+            {
+                var from = SeparatorStart(src, start + 1, close);
+                var lineBreak = src.AsSpan(from, close - from).LastIndexOf('\n');
+                if (lineBreak >= 0)
+                {
+                    return (from + lineBreak + 1, close - (from + lineBreak + 1));
+                }
+            }
+
+            return LineIndentOf(src, start);
+        }
+
+        /// <summary>The whitespace the line holding <paramref name="position"/> starts with.</summary>
+        private static (int Start, int Length) LineIndentOf(string src, int position)
+        {
+            var lineStart = position == 0 ? 0 : src.LastIndexOf('\n', position - 1) + 1;
+            var end = lineStart;
+            while (end < position && src[end] is ' ' or '\t')
+            {
+                end++;
+            }
+
+            return (lineStart, end - lineStart);
+        }
+
+        /// <summary>True when <paramref name="text"/> is <paramref name="unit"/>, repeated once or more.</summary>
+        private static bool IsRepeatOf(ReadOnlySpan<char> text, string unit)
+        {
+            if (unit.Length == 0 || text.Length % unit.Length != 0)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < text.Length; i += unit.Length)
+            {
+                if (!text.Slice(i, unit.Length).SequenceEqual(unit))
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         /// <summary>Everything the parser skips between two items. Deliberately the parser's own set.</summary>
@@ -506,8 +762,9 @@ namespace SExpressions
             return i;
         }
 
-        private void AppendCanonical(SExpression e, StringBuilder sb, int level)
+        private void AppendCanonical(WriteContext context, SExpression e, Indent indent)
         {
+            var sb = context.Builder;
             sb.Append('(').Append(e.Token);
 
             var multiline = false;
@@ -523,6 +780,7 @@ namespace SExpressions
             // Once a comment has been emitted, it runs to the end of its line -- the next item can
             // never follow it with just a space, or it would be swallowed into the comment text on
             // re-parse. It has to start fresh on its own line instead.
+            var inner = indent.Deeper;
             var previousWasComment = false;
             foreach (var item in e.ItemsSpan)
             {
@@ -531,7 +789,7 @@ namespace SExpressions
                     if (previousWasComment)
                     {
                         AppendNewLine(sb);
-                        AppendIndent(sb, level + 1);
+                        inner.AppendTo(context);
                     }
                     else
                     {
@@ -544,14 +802,15 @@ namespace SExpressions
                 else if (item.Kind == SItemKind.Comment)
                 {
                     AppendNewLine(sb);
-                    AppendIndent(sb, level + 1);
+                    inner.AppendTo(context);
                     AppendLeaf(item, sb);
                     previousWasComment = true;
                 }
                 else
                 {
                     AppendNewLine(sb);
-                    AppendNode(item.Expression!, sb, level + 1, leadingIndent: true);
+                    var child = item.Expression!;
+                    AppendNode(context, child, inner, RebaseOnto(context, child, inner), leadingIndent: true);
                     previousWasComment = false;
                 }
             }
@@ -559,14 +818,15 @@ namespace SExpressions
             if (multiline)
             {
                 AppendNewLine(sb);
-                AppendIndent(sb, level);
+                indent.AppendTo(context);
             }
 
             sb.Append(')');
         }
 
-        private void AppendDocumentCanonical(SExpression container, StringBuilder sb)
+        private void AppendDocumentCanonical(WriteContext context, SExpression container)
         {
+            var sb = context.Builder;
             var first = true;
             foreach (var item in container.ItemsSpan)
             {
@@ -579,7 +839,8 @@ namespace SExpressions
 
                 if (item.Kind == SItemKind.Expression)
                 {
-                    AppendNode(item.Expression!, sb, 0, leadingIndent: false);
+                    var form = item.Expression!;
+                    AppendNode(context, form, Indent.Margin, RebaseOnto(context, form, Indent.Margin), leadingIndent: false);
                 }
                 else
                 {
@@ -667,5 +928,172 @@ namespace SExpressions
         /// </summary>
         private static bool NeedsQuotes(string value, char commentPrefix) =>
             value.Length == 0 || value[0] == commentPrefix || value.AsSpan().ContainsAny(MustQuote);
+
+        /// <summary>
+        /// The state of one write: the output, and the indentation unit of the text being written,
+        /// worked out once and only if something needs it.
+        /// </summary>
+        private sealed class WriteContext
+        {
+            private readonly SExpression? _layout;
+            private readonly string _fallbackUnit;
+            private string? _unit;
+
+            public WriteContext(StringBuilder builder, SExpression? layout, string fallbackUnit)
+            {
+                Builder = builder;
+                _layout = layout;
+                _fallbackUnit = fallbackUnit;
+            }
+
+            public StringBuilder Builder { get; }
+
+            /// <summary>
+            /// One level of indentation in the text being written: the unit its own lines use, or
+            /// <see cref="SExpressionWriterOptions.Indent"/> when it has none to go by.
+            /// </summary>
+            public string Unit => _unit ??= (_layout is null ? null : InferUnit(_layout)) ?? _fallbackUnit;
+        }
+
+        /// <summary>
+        /// Where a line starts in the output: whitespace copied out of some text -- a file's own
+        /// indentation, which need not be whole units of anything -- then a number of indent units.
+        /// Keeping the copied part as a slice of that text is what lets a new node line up with a
+        /// file indented in a way the writer would never have chosen, at no allocation.
+        /// </summary>
+        private readonly struct Indent
+        {
+            private readonly string? _text;
+            private readonly int _start;
+            private readonly int _length;
+            private readonly int _levels;
+
+            private Indent(string? text, int start, int length, int levels)
+            {
+                _text = text;
+                _start = start;
+                _length = length;
+                _levels = levels;
+            }
+
+            /// <summary>The left margin: no indentation at all.</summary>
+            public static Indent Margin => default;
+
+            /// <summary>One level further in.</summary>
+            public Indent Deeper => new(_text, _start, _length, _levels + 1);
+
+            private ReadOnlySpan<char> Copied => _text.AsSpan(_start, _length);
+
+            public static Indent OfLevels(int levels) => new(null, 0, 0, Math.Max(levels, 0));
+
+            public static Indent Copy(string text, (int Start, int Length) span) => new(text, span.Start, span.Length, 0);
+
+            public Indent Plus(int levels) => new(_text, _start, _length, _levels + levels);
+
+            /// <summary>This indentation followed by <paramref name="more"/>, which is not whole units.</summary>
+            public Indent Then(ReadOnlySpan<char> more, WriteContext context)
+            {
+                var sb = new StringBuilder(_length + (_levels * context.Unit.Length) + more.Length);
+                sb.Append(Copied);
+                for (var i = 0; i < _levels; i++)
+                {
+                    sb.Append(context.Unit);
+                }
+
+                var text = sb.Append(more).ToString();
+                return new Indent(text, 0, text.Length, 0);
+            }
+
+            public void AppendTo(WriteContext context)
+            {
+                if (_length > 0)
+                {
+                    context.Builder.Append(_text, _start, _length);
+                }
+
+                if (_levels == 0)
+                {
+                    return;
+                }
+
+                var unit = context.Unit;
+                if (unit.Length == 1)
+                {
+                    context.Builder.Append(unit[0], _levels);
+                    return;
+                }
+
+                for (var i = 0; i < _levels; i++)
+                {
+                    context.Builder.Append(unit);
+                }
+            }
+
+            /// <summary>True when this indentation is written exactly as <paramref name="text"/>.</summary>
+            public bool Matches(ReadOnlySpan<char> text, WriteContext context)
+            {
+                if (!text.StartsWith(Copied))
+                {
+                    return false;
+                }
+
+                var rest = text[_length..];
+                return _levels == 0
+                    ? rest.IsEmpty
+                    : rest.Length == _levels * context.Unit.Length && IsRepeatOf(rest, context.Unit);
+            }
+        }
+
+        /// <summary>
+        /// How the whitespace copied out of a node's source maps onto where the node now stands. A
+        /// node still in the slot it was parsed into needs none; one that was moved -- from another
+        /// file, or to another depth -- carries the indentation of the place it left, and every
+        /// line of it is re-based: the line it started on becomes the line it starts on now, and
+        /// each further step in, in its old unit, becomes a step in the unit of the text it joined.
+        /// Only whitespace at the start of a line is ever touched; atoms are copied as they are.
+        /// </summary>
+        private readonly struct Rebase
+        {
+            private readonly string? _source;
+            private readonly int _fromStart;
+            private readonly int _fromLength;
+            private readonly string? _fromUnit;
+            private readonly Indent _to;
+
+            public Rebase(string source, (int Start, int Length) from, string? fromUnit, Indent to)
+            {
+                _source = source;
+                _fromStart = from.Start;
+                _fromLength = from.Length;
+                _fromUnit = fromUnit;
+                _to = to;
+            }
+
+            public static Rebase Identity => default;
+
+            public bool IsIdentity => _source is null;
+
+            /// <summary>Where a line whose indentation in the node's source was <paramref name="line"/> starts now.</summary>
+            public Indent Map(WriteContext context, ReadOnlySpan<char> line)
+            {
+                var from = _source.AsSpan(_fromStart, _fromLength);
+                if (!line.StartsWith(from))
+                {
+                    // Further out than the line the node itself started on. Nothing of it may sit
+                    // further out than that line does now, so that is where it goes.
+                    return _to;
+                }
+
+                var rest = line[from.Length..];
+                if (rest.IsEmpty)
+                {
+                    return _to;
+                }
+
+                return _fromUnit is not null && IsRepeatOf(rest, _fromUnit)
+                    ? _to.Plus(rest.Length / _fromUnit.Length)
+                    : _to.Then(rest, context);
+            }
+        }
     }
 }
